@@ -1,50 +1,56 @@
 # Device Warden
 
-**Know which Android device is safe to use — before you touch it.**
+**触る前に、そのAndroid端末を自分が使ってよいか分かる。**
 
-Device Warden is a lightweight Windows tray app that coordinates Android devices and emulators between people and AI coding agents. It shows at a glance who holds a device, whether it is connected, and whether AI agents are allowed to claim it.
+Device Warden は、Windows のタスクトレイに常駐する軽量な端末管理ツールです。手元のAndroid端末・エミュレーターを、人間と複数のAIコーディングエージェントの間で取り合いにならないよう調整します。誰がどの端末を確保しているか、接続されているか、AIが使ってよいかを一覧で判断できます。
 
 <p align="center">
-  <img src="assets/app-icon.svg" width="96" alt="Device Warden icon">
+  <img src="assets/app-icon.svg" width="96" alt="Device Warden のアイコン">
+</p>
+
+<p align="center">
+  <img src="docs/screenshot.png" alt="Device Warden の端末一覧画面" width="900">
 </p>
 
 ```text
 端末                ADB                利用可否              確保者
 Redmi Pad SE        connected / usb    自分が使用可能        —
-emulator-5554       connected / emu    AI使用中              OpenCode / ses_example…
-Pixel 8             disconnected       自分が使用可能（ADB未接続）  —
+Pixel 8             connected / wifi   AI使用中              OpenCode / ses_example…
+Galaxy S24          connected / usb    自分が使用中          自分
+emulator-5554       disconnected       接続切れ・要確認      Codex
+OPPO CPH2699        disconnected       自分が使用可能（ADB未接続）  —
 ```
 
-## Why
+## なぜ必要か
 
-A Windows machine usually has phones, tablets, and emulators attached to it. When several AI coding agents and a human share them, two problems appear quickly:
+Windows に複数の実機とエミュレーターがつながっていると、AIエージェントと人間が同じ端末を取り合って、次の問題が起きます。
 
-- **Collisions.** Two agents pick the same device, and one silently breaks the other's test run.
-- **Guesswork.** A device that is unplugged is not necessarily free, and an ADB-connected device is not necessarily idle.
+- **衝突** — 2つのエージェントが同じ端末を選び、片方のテスト結果を静かに壊す。
+- **誤解** — 抜けている端末が空いているとは限らず、ADBでつながっている端末も暇とは限らない。
 
-Device Warden gives each device one lease at a time, recorded in a local SQLite database, and exposes that state through a tray UI and a small authenticated CLI/HTTP API.
+Device Warden は端末ごとに同時1件のリースをローカルのSQLiteに記録し、その状態をトレイUIと、認証付きの小さなCLI/HTTP APIで公開します。
 
-## Features
+## 主な機能
 
-- **Lease broker** — atomic `claim`, `heartbeat`, `release`, `list`. One active lease per device, enforced by a database constraint rather than check-then-act.
-- **Connection tracking** — `connected`, `disconnected`, `unauthorized`, `unknown`. Disconnecting or restarting never silently frees a lease; it moves to **needs attention**.
-- **Three independent axes** — ADB connection, lease ownership, and AI policy (`ai_allowed` / `ai_denied`) never overwrite each other.
-- **Human and AI ownership** — OpenCode sessions are identified by session ID with title, project, and working directory. Other tools (Codex, Command Code, …) appear by tool name while keeping a unique lease per worker.
-- **OpenCode plugin** — claims carry the real session ID and heartbeat automatically every 30 seconds. Leases are still released explicitly, never on session end.
-- **ADB mediation** — `adb` calls proxied through a lease pin the target with `-s <serial>` and allow only a fixed subcommand set.
-- **Audit trail** — every claim, release, and forced release records its owner; view it with `device-warden audit` or the GUI's **履歴** button.
-- **Tray-first** — colour-coded shield icon (available / yours / AI / needs attention), Windows sign-in autostart, single-instance behaviour that reopens the existing window.
+- **リースBroker** — `claim` / `heartbeat` / `release` / `list` を提供。端末あたり有効なリースは1件だけで、確認してから取得するのではなくDB制約で排他する。
+- **接続状態の追跡** — `connected` / `disconnected` / `unauthorized` / `unknown`。切断や再起動でリースを勝手に解放せず、**要確認**へ移す。
+- **独立した3つの軸** — ADB接続、リースの所有者、AI利用ポリシー（許可/禁止）は互いを上書きしない。
+- **人間とAIの区別** — OpenCode はセッションIDに加えてタイトル・プロジェクト・作業ディレクトリを表示。Codex や Command Code などはツール名で表示し、同じツールの複数ワーカーも個別のリースで区別する。
+- **OpenCodeプラグイン** — 確保時に実際のセッションIDを渡し、30秒ごとに自動でheartbeatを送る。解放は明示操作のみで、セッション終了では解放しない。
+- **ADBの仲介** — リース経由の `adb` は対象を `-s <serial>` で固定し、許可するサブコマンドを限定する。
+- **監査ログ** — 確保・解放・強制解放の所有者を記録。`device-warden audit` またはGUIの「履歴」で確認できる。
+- **トレイ中心の操作** — 状態で色が変わる盾アイコン、Windowsサインイン時の自動起動、二重起動時は既存ウィンドウを前面に表示。
 
-## Requirements
+## 動作環境
 
-| Requirement | Notes |
+| 要件 | 補足 |
 | --- | --- |
-| Windows 11 (Windows 10 likely works) | Tray and autostart use the Windows API |
-| Python 3.11+ | `py -m venv` is recommended |
-| Android SDK Platform Tools (`adb`) on `PATH` | `adb devices -l` must work |
-| Node.js 24+ | Only for the OpenCode plugin test |
+| Windows 11（Windows 10 でも動作する見込み） | トレイと自動起動はWindows APIを使用 |
+| Python 3.11 以上 | `py -m venv` を推奨 |
+| Android SDK Platform Tools（`adb`）が `PATH` 上 | `adb devices -l` が通ること |
+| Node.js 24 以上 | OpenCodeプラグインのテスト用 |
 
-## Install
+## インストール
 
 ```powershell
 git clone https://github.com/tonbiattack/device-warden.git
@@ -53,50 +59,73 @@ py -m venv .venv
 .\.venv\Scripts\python -m pip install -e .
 ```
 
-Start the broker, then the tray in another terminal:
+Brokerを起動し、別のターミナルでトレイを起動します。
 
 ```powershell
 .\.venv\Scripts\device-warden-broker
 .\.venv\Scripts\device-warden-tray
 ```
 
-The tray starts the broker itself when one is not running, so in practice starting `device-warden-tray` is enough.
+トレイはBrokerが動いていなければ自分で起動するため、実際には `device-warden-tray` だけで足ります。
 
-Closing the window moves it to the notification area; **終了** in the tray menu exits only the UI. The broker is stopped separately with `Ctrl+C`.
+ウィンドウを閉じると通知領域に格納されます。トレイメニューの「終了」はUIだけを終了します。Brokerは別途 `Ctrl+C` で停止してください。
 
-## Usage
+### 単体のexeを作る
 
-### Tray and window
-
-For each device the window shows its name, transport, ADB state, the most important availability label, the current holder, and when it was last seen. Names come from the device itself: a custom alias wins, then the marketing name (`Redmi Pad SE 8.7`), then brand plus model (`OPPO CPH2699`), so bare model codes stay a last resort. Actions are **自分が確保**, **解放**, **強制解放** (with a confirmation warning), **AI許可切替**, **名前変更**, **表示切替**, **削除**, **履歴**, and **自動起動**. The list refreshes every 10 seconds, and so does the tray icon.
-
-### Availability labels
-
-| Label | Meaning |
-| --- | --- |
-| **AI使用中** | An AI lease is active and the device is connected — avoid it |
-| **自分が使用中** | You hold the lease |
-| **自分が使用可能** | No lease, ADB connected |
-| **自分が使用可能（ADB未接続）** | No lease, currently disconnected — physical use is not guaranteed |
-| **接続切れ・要確認** | A lease exists but the connection dropped; the holder is preserved |
-
-An AI-denied device stays usable by humans and is shown with a separate AI policy marker.
-
-### Windows sign-in autostart
+タスクバーには実行ファイル自身のアイコンが表示されるため、配布用にはexeをビルドします。
 
 ```powershell
-device-warden-autostart install   # register
-device-warden-autostart status    # check
-device-warden-autostart remove    # unregister
+.\scripts\build-exe.ps1
 ```
 
-The GUI's **自動起動** button offers the same toggle. Registration creates a shortcut in the current user's Startup folder (`%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\Device Warden.lnk`); no administrator rights are needed. A second launch does not duplicate the app — it brings the existing window to the front. Unregistering does not stop a running instance.
+`dist\DeviceWarden.exe` が生成され、自動起動の登録もこのexeを優先して使います。
+
+## 使い方
+
+### 一覧画面
+
+端末ごとに、名前・接続方法・ADB状態・最も目立つ利用可否・確保者・最終確認時刻を表示します。表示名は端末自身の情報から作ります。別名があればそれを使い、次にマーケティング名（`Redmi Pad SE 8.7`）、最後にブランドと型番（`OPPO CPH2699`）の順です。素の型番ばかりになることはありません。
+
+操作は **自分が確保**、**解放**、**強制解放**（警告付き）、**AI許可切替**、**名前変更**、**表示切替**、**削除**、**履歴**、**自動起動** です。一覧とトレイアイコンは10秒ごとに更新されます。
+
+### 利用可否の表示
+
+| 表示 | 意味 |
+| --- | --- |
+| **AI使用中** | AIがリース中で接続あり。自分の操作は避ける |
+| **自分が使用中** | 自分がリース中 |
+| **自分が使用可能** | リースなし、ADB接続あり |
+| **自分が使用可能（ADB未接続）** | リースなし、現在は未接続。物理的な利用可否は保証されない |
+| **接続切れ・要確認** | リースはあるが接続が切れた。所有者を保持したまま |
+| **ADB状態要確認（未確保）** | リースなしだがADBの状態を取得できていない |
+
+AI利用禁止の端末は、人間はそのまま使え、AIポリシーだけが別表示になります。
+
+### トレイアイコンの色
+
+| 色 | 状態 |
+| --- | --- |
+| 緑 | 使える端末がある |
+| 青 | 自分が確保中 |
+| 黄 | AIが確保中 |
+| 赤 | 要確認のリース、またはADB異常がある |
+| 灰 | 端末なし、またはBroker未接続 |
+
+### サインイン時の自動起動
+
+```powershell
+device-warden-autostart install   # 登録
+device-warden-autostart status    # 確認
+device-warden-autostart remove    # 解除
+```
+
+GUIの「自動起動」ボタンからも切り替えられます。現在のユーザーのスタートアップフォルダ（`%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\Device Warden.lnk`）にショートカットを作るだけで、管理者権限は不要です。2回起動しても増えず、既存のウィンドウが前面に出ます。解除しても起動中のプロセスは止まりません。
 
 ## CLI
 
 ```powershell
 device-warden list
-device-warden claim --tool Codex                    # auto-select a free device
+device-warden claim --tool Codex                    # 空き端末を自動選択
 device-warden claim --tool Codex --device <device_id>
 device-warden adb <lease_id> shell getprop
 device-warden heartbeat <lease_id>
@@ -104,13 +133,13 @@ device-warden release <lease_id>
 device-warden audit
 ```
 
-Prefix commands with `.\.venv\Scripts\` when the virtual environment is not activated. `--tool "Command Code"` works with any tool name.
+仮想環境を有効化していない場合は、各コマンドの先頭に `.\.venv\Scripts\` を付けます。`--tool "Command Code"` のように任意のツール名を指定できます。
 
-The returned `lease_id` is the proof of ownership: keep it private, send a heartbeat at least every 120 seconds while working, and release when done. Lease IDs of AI leases are deliberately omitted from `list` output.
+返ってくる `lease_id` が所有権の証明です。秘密として扱い、作業中は120秒以内の間隔でheartbeatを送り、終わったらreleaseしてください。AIのリースIDは `list` の出力には含めません。
 
-## OpenCode integration
+## OpenCode との連携
 
-Add the plugin directory to `plugins` in your OpenCode configuration:
+OpenCode の設定にある `plugins` へ、このプラグインのディレクトリを追加します。
 
 ```jsonc
 {
@@ -119,70 +148,70 @@ Add the plugin directory to `plugins` in your OpenCode configuration:
 }
 ```
 
-The plugin registers a `device_warden` tool with `list`, `claim`, `heartbeat`, `release`, and `adb` actions. On `claim` it supplies the calling session ID, title, project, and working directory, and then heartbeats every 30 seconds until the lease is released. If the broker is unreachable it reports an actionable error instead of retrying silently.
+`device_warden` ツールに `list` / `claim` / `heartbeat` / `release` / `adb` が生えます。`claim` すると呼び出し元のセッションID・タイトル・プロジェクト・作業ディレクトリをBrokerへ渡し、以降30秒ごとに自動でheartbeatを送ります。Brokerに接続できない場合は、黙って再試行せず、対処できるエラーを返します。
 
-Requirements for the integration to be meaningful:
+連携を成立させる前提は次のとおりです。
 
-- The session must claim a device **before** running ADB.
-- `release` is explicit; session exit does not free the device.
-- Direct `adb` calls outside the broker are outside Device Warden's control.
+- 端末を操作する**前に** claim する。
+- release は明示操作。セッション終了では解放しない。
+- Brokerを経由しない直接の `adb` は、Device Warden の管理外。
 
-## How it works
+## 仕組み
 
 ```text
-┌──────────────┐   authenticated localhost HTTP   ┌──────────────────┐
-│ Tray / CLI   │ ───────────────────────────────► │ Broker (127.0.0.1)│
-│ OpenCode     │ ◄─────────────────────────────── │ SQLite + ADB      │
-└──────────────┘                                  └──────────────────┘
+┌──────────────────┐   localhost限定・トークン認証   ┌────────────────────┐
+│ トレイ / CLI      │ ─────────────────────────────► │ Broker (127.0.0.1) │
+│ OpenCode          │ ◄───────────────────────────── │ SQLite + ADB       │
+└──────────────────┘                                └────────────────────┘
 ```
 
-- `device_warden/store.py` — SQLite schema, lease transactions, ADB discovery and mediation.
-- `device_warden/server.py` — localhost-only HTTP API with a bearer token, background monitor.
-- `device_warden/gui.py` — Tkinter window, tray icon, state colours.
-- `device_warden/autostart.py` — Startup shortcut, single-instance mutex, bring-to-front signal.
-- `device_warden/icon.py` — icon artwork (the SVG in `assets/` is the canonical design).
-- `integrations/opencode/` — OpenCode V2 plugin and its test.
+- `device_warden/store.py` — SQLiteスキーマ、リースのトランザクション、ADBの検出と仲介。
+- `device_warden/server.py` — localhost限定のHTTP API、bearerトークン、定期監視。
+- `device_warden/gui.py` — Tkinterの画面、トレイアイコン、状態色、前面化。
+- `device_warden/autostart.py` — スタートアップのショートカット、単一インスタンス、前面表示の通知。
+- `device_warden/icon.py` — アイコン描画（`assets/` のSVGが正本）。
+- `integrations/opencode/` — OpenCode V2プラグインとそのテスト。
 
-Leases are released only by their own lease ID or by an explicit forced release. A disconnect, broker restart, or missed heartbeat moves a lease to `recovery_required` instead of freeing it. USB and Wi-Fi serials are treated as different devices on purpose, so a reconnect cannot be mistaken for a different unit.
+リースは自分の `lease_id` か、明示的な強制解放でのみ解放されます。切断・Broker再起動・heartbeat停止では `recovery_required` へ移り、空きには戻しません。USBとWi-Fiのシリアルは意図的に別端末として扱い、再接続を別の個体と取り違えないようにしています。
 
-Design documents: [specification](docs/SPEC.md) · [architecture](docs/ARCHITECTURE.md)
+設計資料: [仕様書](docs/SPEC.md) · [技術設計](docs/ARCHITECTURE.md)
 
-## Configuration
+## 設定
 
-| Variable | Default | Purpose |
+| 変数 | 既定値 | 用途 |
 | --- | --- | --- |
-| `DEVICE_WARDEN_HOME` | `%USERPROFILE%\.device-warden` | Database, broker token, generated icon |
+| `DEVICE_WARDEN_HOME` | `%USERPROFILE%\.device-warden` | DB、Brokerトークン、生成したアイコン |
 
-Data is stored outside `%LOCALAPPDATA%` on purpose: packaged Python installs may virtualise AppData, which would hide the broker token from the OpenCode plugin. The directory contains device serials and local paths, so keep it private and out of version control (`.gitignore` already excludes it).
+データを `%LOCALAPPDATA%` に置かないのは意図的です。パッケージ版のPythonではAppDataが仮想化され、BrokerトークンがOpenCodeプラグインから見えなくなるためです。このディレクトリには端末シリアルやローカルパスが入るので、共有せず、バージョン管理にも入れないでください（`.gitignore` で除外済み）。
 
-## Tests
+## テスト
 
 ```powershell
 python -m unittest discover -s tests -v
-node integrations/opencode/test.mjs        # Node.js 24+
+node integrations/opencode/test.mjs        # Node.js 24 以上
 ```
 
-The suite covers parallel claims, policy enforcement, disconnect/reconnect ownership, stale heartbeat handling, ADB target pinning, broker authentication, audit output, icon state priority, and autostart install/remove.
+並列claim、ポリシー強制、切断・再接続時の所有者保持、heartbeat停止、ADB対象の固定、Broker認証、監査ログ、アイコンの状態優先度、自動起動の登録・解除を網羅しています。README用のスクリーンショットは `python scripts/capture-screenshot.py` で、架空の端末データから再生成できます。
 
-## Limitations
+## 制限
 
-Device Warden is a coordination tool, not a sandbox.
+Device Warden は調整ツールであり、サンドボックスではありません。
 
-- **Direct ADB use cannot be detected or blocked.** Anyone or any agent that calls `adb` without going through the broker can still collide.
-- **Connection means reachability, not idleness.** A connected device may be in use physically; a disconnected one may still be physically occupied.
-- **Serial reuse or spoofing is not detected.** USB↔Wi-Fi switching and serial changes are treated as separate devices.
-- **Local isolation is limited.** The API is localhost-only and token-authenticated, and AI lease IDs are hidden from listings, but any process running as the same Windows user can read the token and database.
-- **No automatic release.** Idle detection or session end never frees a device, by design.
+- **直接のADB操作は検出も阻止もできない。** Brokerを通さずに `adb` を呼ぶ人やエージェントは、そのまま衝突し得る。この制約は仕様上の前提で、対策済みとは扱わない。
+- **接続は到達性であって空き状態ではない。** 接続中の端末が物理的に使用中かもしれず、未接続の端末が物理的に空いているとも限らない。
+- **シリアルの再利用や偽装は検出できない。** USBとWi-Fiの切り替えやシリアル変更は別端末として扱う。
+- **ローカルでの隔離は限定的。** APIはlocalhost限定でトークン認証し、AIのリースIDは一覧に出さないが、同じWindowsユーザーで動くプロセスはトークンもDBも読める。
+- **自動解放はしない。** アイドル検出やセッション終了で端末を解放することは、意図的に行わない。
 
-## Contributing
+## コントリビューション
 
-Issues and pull requests are welcome. Please:
+Issue と Pull Request を歓迎します。
 
-1. Keep changes consistent with the state model in [docs/SPEC.md](docs/SPEC.md) — connection, lease, and AI policy are separate axes.
-2. Never weaken the rule that a lost connection or stale lease must not silently become "free".
-3. Add a test for behaviour changes; run the suites above.
-4. Do not commit device serials, IPs, local paths, session names, or broker tokens.
+1. [仕様書](docs/SPEC.md) の状態モデルに従う。接続・リース・AIポリシーは別の軸として扱う。
+2. 「接続断や失効したリースが黙って空きになる」挙動を弱めない。
+3. 挙動を変えたらテストを追加し、上記のテストを通す。
+4. 端末シリアル、IP、ローカルパス、セッション名、Brokerトークンをコミットしない。
 
-## License
+## ライセンス
 
-No license has been added yet. Until one is chosen, all rights are reserved by the author.
+ライセンスは未設定です。選定されるまでは著作者がすべての権利を留保します。
