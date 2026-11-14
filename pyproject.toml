@@ -6,6 +6,8 @@ build-backend = "setuptools.build_meta"
 name = "device-warden"
 version = "0.1.0"
 description = "Local Android device lease manager"
+readme = "README.md"
+license = { text = "MIT" }
 requires-python = ">=3.11"
 dependencies = ["pystray>=0.19", "Pillow>=10"]
 
