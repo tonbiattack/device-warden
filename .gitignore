@@ -1,0 +1,18 @@
+__pycache__/
+*.py[cod]
+.venv/
+.build-venv/
+.pytest_cache/
+data/
+*.db
+*.db-*
+*.token
+*.egg-info/
+
+# PyInstaller output
+build/
+dist/
+DeviceWarden.spec
+
+# Local runtime data (device serials, paths, broker token)
+.device-warden/

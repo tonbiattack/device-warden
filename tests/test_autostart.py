@@ -1,0 +1,122 @@
+import os
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from device_warden import autostart
+from device_warden.autostart import pythonw
+
+
+class AutostartTests(unittest.TestCase):
+    def test_pythonw_prefers_windowless_interpreter(self):
+        with tempfile.TemporaryDirectory() as folder:
+            python = Path(folder) / 'python.exe'
+            pythonw_path = Path(folder) / 'pythonw.exe'
+            python.write_text('')
+            pythonw_path.write_text('')
+            with patch.object(autostart.sys, 'executable', str(python)):
+                self.assertEqual(pythonw(), pythonw_path)
+
+    def test_pythonw_falls_back_to_current_interpreter(self):
+        with tempfile.TemporaryDirectory() as folder:
+            python = Path(folder) / 'python.exe'
+            python.write_text('')
+            with patch.object(autostart.sys, 'executable', str(python)):
+                self.assertEqual(pythonw(), python)
+
+    def test_frozen_build_uses_its_own_executable(self):
+        with patch.object(autostart.sys, 'frozen', True, create=True), \
+             patch.object(autostart.sys, 'executable', r'C:\Apps\DeviceWarden.exe'):
+            self.assertEqual(str(pythonw()), r'C:\Apps\DeviceWarden.exe')
+            self.assertEqual(str(autostart.packaged_exe()), r'C:\Apps\DeviceWarden.exe')
+
+    def test_install_uses_packaged_exe_when_present(self):
+        with tempfile.TemporaryDirectory() as folder:
+            exe = Path(folder) / 'DeviceWarden.exe'
+            exe.write_bytes(b'')
+            with patch.object(autostart, 'packaged_exe', return_value=exe), \
+                 patch.object(autostart, 'startup_folder', return_value=Path(folder)), \
+                 patch.object(autostart.subprocess, 'run') as run:
+                target = Path(folder) / 'Device Warden.lnk'
+                run.return_value.returncode = 0
+                run.side_effect = lambda *a, **k: (target.write_bytes(b''), run.return_value)[1]
+                autostart.install()
+                command = run.call_args.args[0][-1]
+                self.assertIn(str(exe), command)
+                self.assertIn("$s.Arguments = ''", command)
+
+    def test_install_and_remove_shortcut(self):
+        with tempfile.TemporaryDirectory() as folder:
+            with patch.dict(os.environ, {'APPDATA': folder}, clear=False), \
+                 patch.object(autostart, 'startup_folder',
+                              return_value=Path(folder) / 'Startup'), \
+                 patch.object(autostart, 'packaged_exe', return_value=None):
+                with patch.object(autostart.subprocess, 'run') as run:
+                    run.return_value.returncode = 0
+                    target = autostart.shortcut_path()
+
+                    def create(*args, **kwargs):
+                        target.write_bytes(b'')
+                        return run.return_value
+                    run.side_effect = create
+                    self.assertFalse(autostart.status())
+                    self.assertEqual(autostart.install(), target)
+                    self.assertTrue(autostart.status())
+                    command = run.call_args.args[0][-1]
+                    self.assertIn('-m device_warden.tray', command)
+                    self.assertIn('Device Warden.lnk', command)
+                    autostart.remove()
+                    self.assertFalse(autostart.status())
+
+    def test_install_failure_is_reported(self):
+        with tempfile.TemporaryDirectory() as folder:
+            with patch.object(autostart, 'startup_folder', return_value=Path(folder)), \
+                 patch.object(autostart.subprocess, 'run') as run:
+                run.return_value.returncode = 1
+                with self.assertRaises(Exception):
+                    autostart.install()
+
+    def test_notify_existing_instance_when_none_is_running(self):
+        name = f'Local\\DeviceWardenShowTest-{os.getpid()}'
+        with patch.object(autostart, 'SHOW_EVENT_NAME', name):
+            self.assertFalse(autostart.notify_existing_instance())
+
+    def test_second_launch_signals_running_instance(self):
+        import threading
+        name = f'Local\\DeviceWardenShowTest-{os.getpid()}'
+        with patch.object(autostart, 'SHOW_EVENT_NAME', name):
+            event = autostart.create_show_event()
+            self.assertTrue(event)
+            shown = threading.Event()
+            thread = threading.Thread(target=autostart.watch_show_events,
+                                      args=(event, shown.set), daemon=True)
+            try:
+                thread.start()
+                self.assertTrue(autostart.notify_existing_instance())
+                self.assertTrue(shown.wait(5))
+            finally:
+                import ctypes
+                ctypes.WinDLL('kernel32').SetEvent(event)
+
+    def test_broker_running_uses_client(self):
+        with patch.object(autostart, 'call', return_value=[]):
+            self.assertTrue(autostart.broker_running())
+        with patch.object(autostart, 'call', side_effect=autostart.WardenError('x')):
+            self.assertFalse(autostart.broker_running())
+
+    def test_second_instance_is_rejected(self):
+        name = f'Local\\DeviceWardenTest-{os.getpid()}'
+        first = autostart.acquire_single_instance(name)
+        try:
+            self.assertIsNotNone(first)
+            self.assertIsNone(autostart.acquire_single_instance(name))
+        finally:
+            autostart.release_single_instance(first)
+        second = autostart.acquire_single_instance(name)
+        self.assertIsNotNone(second)
+        autostart.release_single_instance(second)
+
+
+if __name__ == '__main__':
+    unittest.main()

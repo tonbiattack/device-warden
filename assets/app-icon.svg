@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Device Warden">
+  <title>Device Warden</title>
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="#14212e"/>
+  <path fill="#35d6a4" d="M256 104c-40.4 0-76.9-4.2-108-12.5a5 5 0 0 0-6.2 5V290c0 80 52.6 118 111.8 130.5a6 6 0 0 0 4.8 0C318 407.9 370 370 370 290V96.5a5 5 0 0 0-6.2-5C332.7 99.8 296.4 104 256 104Z"/>
+  <path fill="none" stroke="#14212e" stroke-width="44" stroke-linecap="round" stroke-linejoin="round" d="m196 262 44 44 82-94"/>
+</svg>

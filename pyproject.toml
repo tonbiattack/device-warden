@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "device-warden"
+version = "0.1.0"
+description = "Local Android device lease manager"
+requires-python = ">=3.11"
+dependencies = ["pystray>=0.19", "Pillow>=10"]
+
+[project.scripts]
+device-warden = "device_warden.cli:main"
+device-warden-broker = "device_warden.server:main"
+device-warden-tray = "device_warden.tray:main"
+device-warden-autostart = "device_warden.autostart:main"
+
+[tool.setuptools.packages.find]
+include = ["device_warden*"]
