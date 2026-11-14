@@ -1,3 +1,4 @@
+import ctypes
 import datetime
 import json
 import threading
@@ -199,11 +200,14 @@ def main():
     root.iconbitmap(default=str(icon_path()))
     started = time.time()
 
+    def bring_to_front():
+        _force_foreground(root)
+
     def show(icon=None, item=None):
-        root.after(0, lambda: (root.deiconify(), root.lift(), root.focus_force()))
+        root.after(0, bring_to_front)
 
     global _show_window
-    _show_window = lambda: root.after(0, lambda: (root.deiconify(), root.lift(), root.focus_force()))
+    _show_window = lambda: root.after(0, bring_to_front)
 
     def quit_app(icon, item):
         icon.stop()
@@ -228,6 +232,35 @@ def main():
     threading.Thread(target=tray.run, daemon=True).start()
     root.after(500, sync_tray)
     root.mainloop()
+
+
+def _force_foreground(root):
+    """Raise the window even when Windows says another process owns the foreground.
+
+    A plain deiconify/lift is ignored when the request comes from a background
+    process (the tray signal), so briefly attach to the foreground thread's input
+    queue, which lets us call SetForegroundWindow legitimately.
+    """
+    root.deiconify()
+    root.lift()
+    root.update_idletasks()
+    try:
+        hwnd = int(root.wm_frame(), 16)
+    except (tk.TclError, ValueError):
+        return
+    user32 = ctypes.WinDLL('user32', use_last_error=True)
+    user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+    foreground = user32.GetForegroundWindow()
+    current = ctypes.WinDLL('kernel32').GetCurrentThreadId()
+    target = user32.GetWindowThreadProcessId(foreground, None) if foreground else 0
+    attached = bool(foreground and target and target != current and user32.AttachThreadInput(target, current, True))
+    try:
+        user32.BringWindowToTop(hwnd)
+        user32.SetForegroundWindow(hwnd)
+    finally:
+        if attached:
+            user32.AttachThreadInput(target, current, False)
+    root.focus_force()
 
 
 LABELS = {
