@@ -34,6 +34,20 @@ class StoreTests(unittest.TestCase):
             results = list(pool.map(claim, range(10)))
         self.assertEqual(sum(x is not None for x in results), 1)
 
+    def test_parallel_claim_distributes_two_devices(self):
+        self.store.discover(DEVICES + 'serial-two device model:Other\n')
+        def claim(session):
+            try:
+                return self.store.claim('ai', tool='OpenCode', session_id=session)['device_id']
+            except WardenError:
+                return None
+        with ThreadPoolExecutor(max_workers=12) as pool:
+            results = list(pool.map(claim, [f'session-{i}' for i in range(12)]))
+        claimed = [device for device in results if device]
+        self.assertEqual(len(claimed), 2)
+        self.assertEqual(len(set(claimed)), 2)
+        self.assertNotEqual(*[row['session_id'] for row in self.store.list()])
+
     def test_disconnect_reconnect_preserves_owner(self):
         lease = self.store.claim('ai', tool='OpenCode', session_id='session-one')
         self.store.discover(EMPTY)
