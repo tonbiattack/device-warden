@@ -24,6 +24,25 @@ def status(d):
     return '管理内では未確保（ADB要確認）'
 
 
+def owner_label(d):
+    """Show which session holds a lease, not just the tool name.
+
+    Several OpenCode sessions can hold different devices, so "OpenCode" alone
+    does not identify the owner. Use the session title when available and fall
+    back to a short session ID that stays readable in a narrow column.
+    """
+    if d['kind'] == 'human':
+        return '自分'
+    if d['kind'] != 'ai':
+        return 'なし'
+    tool = d['tool'] or 'AI'
+    if d.get('title'):
+        return f"{tool}: {d['title']}"
+    if d.get('session_id'):
+        return f"{tool}: {d['session_id'][:12]}…"
+    return tool
+
+
 def stamp(value):
     return datetime.datetime.fromtimestamp(value).strftime('%Y-%m-%d %H:%M:%S') if value else '不明'
 
@@ -40,7 +59,7 @@ class App:
         self.message.pack()
         columns = ('name', 'connection', 'status', 'owner', 'policy', 'seen')
         self.tree = ttk.Treeview(root, columns=columns, show='headings', height=12)
-        for key, title, width in [('name','端末',180),('connection','ADB',110),('status','利用可否',220),('owner','確保者',180),('policy','AI',80),('seen','最終確認',150)]:
+        for key, title, width in [('name','端末',180),('connection','ADB',110),('status','利用可否',200),('owner','確保者',240),('policy','AI',80),('seen','最終確認',150)]:
             self.tree.heading(key, text=title)
             self.tree.column(key, width=width)
         self.tree.pack(fill='both', expand=True, padx=8)
@@ -80,7 +99,7 @@ class App:
         self.tree.delete(*self.tree.get_children())
         self.rows = rows
         for d in rows:
-            owner = (d['tool'] or 'AI') if d['kind'] == 'ai' else ('自分' if d['kind'] == 'human' else 'なし')
+            owner = owner_label(d)
             name = d['display_name']
             if d['hidden']:
                 name += '（非表示）'
@@ -126,7 +145,7 @@ class App:
     def force(self):
         d = self.require_selection()
         if d and d['kind'] and messagebox.askyesno('強制解放', '作業中のAIや利用者の操作を中断し、競合を引き起こす可能性があります。強制解放しますか？'):
-            self.run('release', force=True, device_id=d['id'])
+            self.run('force-release', acknowledge=True, device_id=d['id'])
             self.load()
 
     def reconfirm(self):
@@ -265,7 +284,7 @@ def main():
                 continue
             row = next(item for item in rows if item['id'] == device_id)
             if kind == 'ai':
-                notify(f"{row['display_name']} を {tool or 'AI'} が確保しました")
+                notify(f"{row['display_name']} を {owner_label(row)} が確保しました")
             elif before[0] == 'ai' and kind is None:
                 notify(f"{row['display_name']} が解放されました")
         owners.clear()

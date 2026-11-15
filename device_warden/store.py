@@ -23,6 +23,34 @@ def run_adb(args, timeout):
                                        text(result.stdout), text(result.stderr))
 
 
+def redact_lease(lease_id):
+    """Short, non-reversible reference to a lease for audit output.
+
+    Lease IDs are release credentials. Audit history only needs to correlate
+    events, so it keeps a prefixed fragment instead of the whole token.
+    """
+    return f"{lease_id[:8]}…" if lease_id else None
+
+
+def scrub_audit_owner(owner):
+    """Remove release credentials from an audit owner payload.
+
+    Older rows stored the raw lease ID. Audit output is readable by any CLI
+    caller, so those values must not leak a usable release credential.
+    """
+    try:
+        data = json.loads(owner)
+    except (TypeError, ValueError):
+        return owner
+    if not isinstance(data, dict):
+        return owner
+    if 'lease_id' in data:
+        data['lease'] = redact_lease(data.pop('lease_id'))
+    if 'lease' in data and data['lease'] and '…' not in str(data['lease']):
+        data['lease'] = redact_lease(str(data['lease']))
+    return json.dumps(data, ensure_ascii=False)
+
+
 def display_name(device):
     """Prefer the owner's alias, then the marketing name, then brand + model.
 
@@ -132,6 +160,7 @@ class Store:
                     self._identify(db, row['id'], serial, model, product)
             self._mark_recovery(db, "device_id IN (SELECT id FROM devices WHERE connection != 'connected')",
                                 (), 'connection_lost', now)
+            db.execute("INSERT OR REPLACE INTO settings VALUES('adb_health', 'ok')")
             db.commit()
 
     def _identify(self, db, device_id, serial, model, product):
@@ -155,10 +184,17 @@ class Store:
                    (brand, market, device_id))
 
     def adb_unavailable(self):
+        """Record that ADB itself could not be run.
+
+        This is a broker-level fault, not evidence that any device disconnected,
+        so it must not move live leases. Marking the connection axis as unknown is
+        honest (we cannot verify it right now) and keeps `adb`/`claim` blocked, but
+        the lease axis stays untouched until a per-device check proves a loss.
+        """
         with self.connect() as db:
             db.execute('BEGIN IMMEDIATE')
             db.execute("UPDATE devices SET connection='unknown'")
-            self._mark_recovery(db, '1=1', (), 'adb_unavailable', time.time())
+            db.execute("INSERT OR REPLACE INTO settings VALUES('adb_health', 'unavailable')")
             db.commit()
 
     def recover_restart(self):
@@ -230,32 +266,64 @@ class Store:
         # Do not permit a second target selector or server-wide commands.
         if args[0] not in ('shell', 'install', 'uninstall', 'push', 'pull', 'logcat', 'forward', 'reverse'):
             raise WardenError('このADBコマンドは仲介対象外です。')
+        # Read the target in a short transaction, then release the write lock before
+        # running adb. Holding BEGIN IMMEDIATE across a subprocess that can take up
+        # to a minute made the monitor thread fail with "database is locked" and
+        # stop updating connection state and heartbeat timeouts.
         with self.connect() as db:
-            db.execute('BEGIN IMMEDIATE')
             row = db.execute("""SELECT d.serial FROM leases l JOIN devices d ON d.id=l.device_id
               WHERE l.id=? AND l.state='active' AND d.connection='connected'""", (lease_id,)).fetchone()
-            if not row:
-                raise WardenError('接続中の有効なリースが必要です。')
-            try:
-                result = run_adb(['adb', '-s', row['serial'], *args], timeout=60)
-            except (OSError, subprocess.SubprocessError) as exc:
-                raise WardenError('ADBコマンドを実行できませんでした。') from exc
-            db.commit()
-            return {'exit_code': result.returncode, 'stdout': result.stdout, 'stderr': result.stderr}
+        if not row:
+            raise WardenError('接続中の有効なリースが必要です。')
+        try:
+            result = run_adb(['adb', '-s', row['serial'], *args], timeout=60)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise WardenError('ADBコマンドを実行できませんでした。') from exc
+        return {'exit_code': result.returncode, 'stdout': result.stdout, 'stderr': result.stderr}
 
-    def release(self, lease_id=None, device_id=None, force=False):
+    def release(self, lease_id):
+        """Release a lease the caller holds."""
         with self.connect() as db:
             db.execute('BEGIN IMMEDIATE')
-            row = db.execute("SELECT * FROM leases WHERE " + ('device_id=?' if force else 'id=?') + " AND state IN ('active','recovery_required')", (device_id if force else lease_id,)).fetchone()
+            row = db.execute("SELECT * FROM leases WHERE id=? AND state IN ('active','recovery_required')",
+                             (lease_id,)).fetchone()
             if not row:
                 raise WardenError('リースが見つかりません。')
             db.execute("UPDATE leases SET state='released' WHERE id=?", (row['id'],))
-            owner = json.dumps({'kind': row['kind'], 'tool': row['tool'], 'session_id': row['session_id']}, ensure_ascii=False)
-            db.execute('INSERT INTO audit VALUES(?,?,?,?)', (time.time(), 'force_release' if force else 'release', row['device_id'], owner))
+            owner = json.dumps({'kind': row['kind'], 'tool': row['tool'], 'session_id': row['session_id']},
+                               ensure_ascii=False)
+            db.execute('INSERT INTO audit VALUES(?,?,?,?)', (time.time(), 'release', row['device_id'], owner))
+            db.commit()
+
+    def force_release(self, device_id, acknowledge=False):
+        """Interrupt whoever holds a device. Separate from `release` on purpose.
+
+        Interrupting another session is an operator action, not routine cleanup,
+        so it is not reachable through the generic `release` action that agents
+        and plugins call. Callers must pass `acknowledge` explicitly, and every
+        use is audited.
+        """
+        if acknowledge is not True:
+            raise WardenError('強制解放には acknowledge が必要です。')
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row = db.execute("SELECT * FROM leases WHERE device_id=? AND state IN ('active','recovery_required')",
+                             (device_id,)).fetchone()
+            if not row:
+                raise WardenError('リースが見つかりません。')
+            db.execute("UPDATE leases SET state='released' WHERE id=?", (row['id'],))
+            owner = json.dumps({'kind': row['kind'], 'tool': row['tool'], 'session_id': row['session_id']},
+                               ensure_ascii=False)
+            db.execute('INSERT INTO audit VALUES(?,?,?,?)', (time.time(), 'force_release', row['device_id'], owner))
             db.commit()
 
     def reconfirm(self, device_id):
-        """Re-check one device without ever freeing its lease automatically."""
+        """Re-check one device without ever freeing its lease automatically.
+
+        The lease ID is a release credential, so it is not returned: any caller
+        that could read it here could release another session's lease. Callers
+        only need the connection and lease state.
+        """
         with self.connect() as db:
             row = db.execute('SELECT serial FROM devices WHERE id=?', (device_id,)).fetchone()
         if not row:
@@ -270,10 +338,12 @@ class Store:
             if row['lease_id']:
                 db.execute('INSERT INTO audit VALUES(?,?,?,?)',
                            (time.time(), 'reconfirm', device_id,
-                            json.dumps({'lease_id': row['lease_id'], 'state': row['state']}, ensure_ascii=False)))
+                            json.dumps({'lease': redact_lease(row['lease_id']), 'state': row['state']},
+                                       ensure_ascii=False)))
                 db.commit()
         return {'connection': row['connection'], 'lease_state': row['state'],
-                'recovery_reason': row['recovery_reason'], 'lease_id': row['lease_id']}
+                'recovery_reason': row['recovery_reason'],
+                'has_lease': bool(row['lease_id'])}
 
     def launch_scrcpy(self, device_id):
         """Start scrcpy only for a connected device the caller already holds."""
@@ -326,7 +396,7 @@ class Store:
                 FROM audit a LEFT JOIN devices d ON d.id=a.device_id
                 WHERE (? IS NULL OR a.device_id=?) ORDER BY a.at DESC LIMIT ?''',
                 (device_id, device_id, limit)).fetchall()
-            return [dict(row) for row in rows]
+            return [dict(row, owner=scrub_audit_owner(row['owner'])) for row in rows]
 
     def default_policy(self, allowed):
         with self.connect() as db:

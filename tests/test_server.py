@@ -48,6 +48,17 @@ class ServerTests(unittest.TestCase):
         self.assertIsNone(self.post('list', {})[0]['kind'])
 
 
+    def test_force_release_needs_its_own_action_and_acknowledgement(self):
+        claim = self.post('claim', {'kind': 'ai', 'tool': 'Codex'})
+        with self.assertRaises(urllib.error.HTTPError) as error:
+            self.post('release', {'device_id': claim['device_id'], 'force': True})
+        self.assertEqual(error.exception.code, 400)
+        with self.assertRaises(urllib.error.HTTPError) as error:
+            self.post('force-release', {'device_id': claim['device_id']})
+        self.assertEqual(error.exception.code, 409)
+        self.post('force-release', {'device_id': claim['device_id'], 'acknowledge': True})
+        self.assertIsNone(self.post('list', {})[0]['kind'])
+
     def test_second_broker_cannot_share_the_port(self):
         with self.assertRaises(OSError):
             BrokerServer(('127.0.0.1', self.server.server_port), make_handler(self.store, 'other')).server_close()

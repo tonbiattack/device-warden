@@ -1,8 +1,10 @@
 import tempfile
+import time
 import unittest
 import json
 import os
 import sqlite3
+import subprocess
 from contextlib import closing
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -10,6 +12,7 @@ from unittest.mock import patch
 from device_warden.store import Store, WardenError
 from device_warden.store import display_name
 from device_warden.gui import status
+from device_warden.gui import owner_label
 from device_warden.server import data_dir
 
 DEVICES = 'List of devices attached\nserial-one device model:Phone transport_id:1\n'
@@ -138,7 +141,7 @@ class StoreTests(unittest.TestCase):
 
     def test_persistence_and_force_audit(self):
         self.store.claim('ai', tool='Codex')
-        self.store.release(device_id=self.device, force=True)
+        self.store.force_release(self.device, acknowledge=True)
         reopened = Store(self.store.path)
         with reopened.connect() as db:
             owner = db.execute("SELECT owner FROM audit WHERE action='force_release'").fetchone()[0]
@@ -157,7 +160,7 @@ class StoreTests(unittest.TestCase):
 
     def test_audit_lists_owner_and_operations(self):
         self.store.claim('ai', tool='Codex', session_id='session-one')
-        self.store.release(device_id=self.device, force=True)
+        self.store.force_release(self.device, acknowledge=True)
         rows = self.store.audit()
         self.assertEqual([row['action'] for row in rows], ['force_release', 'claim'])
         self.assertEqual(rows[0]['device'], 'Phone')
@@ -174,7 +177,8 @@ class StoreTests(unittest.TestCase):
             after = self.store.reconfirm(self.device)
         self.assertEqual(after['lease_state'], 'recovery_required')
         self.assertEqual(after['recovery_reason'], 'connection_lost')
-        self.assertEqual(after['lease_id'], lease['lease_id'])
+        self.assertTrue(after['has_lease'])
+        self.assertNotIn('lease_id', after)
         self.assertIn('reconfirm', [row['action'] for row in self.store.audit()])
         with self.assertRaises(WardenError):
             self.store.reconfirm('missing')
@@ -185,7 +189,7 @@ class StoreTests(unittest.TestCase):
         self.store.claim('ai', tool='Codex')
         with self.assertRaises(WardenError):
             self.store.launch_scrcpy(self.device)
-        self.store.release(device_id=self.device, force=True)
+        self.store.force_release(self.device, acknowledge=True)
         self.store.claim('human', device_id=self.device)
         with patch('device_warden.store.subprocess.Popen') as popen:
             self.assertTrue(self.store.launch_scrcpy(self.device)['started'])
@@ -197,6 +201,69 @@ class StoreTests(unittest.TestCase):
         with patch('device_warden.store.subprocess.Popen', side_effect=OSError('missing')):
             with self.assertRaises(WardenError):
                 self.store.launch_scrcpy(self.device)
+
+    def test_reconfirm_neither_returns_nor_logs_the_lease_id(self):
+        lease = self.store.claim('ai', tool='Codex')
+        with patch.object(self.store, 'discover', side_effect=lambda output=None: Store.discover(self.store, DEVICES)):
+            result = self.store.reconfirm(self.device)
+        self.assertNotIn('lease_id', result)
+        self.assertTrue(result['has_lease'])
+        logged = [row for row in self.store.audit() if row['action'] == 'reconfirm']
+        self.assertEqual(len(logged), 1)
+        self.assertNotIn(lease['lease_id'], logged[0]['owner'])
+        self.assertNotIn(lease['lease_id'], json.dumps(self.store.list()))
+
+    def test_audit_never_exposes_a_usable_release_credential(self):
+        lease = self.store.claim('ai', tool='Codex', session_id='session-one')
+        # Simulate a historical row written before lease IDs were redacted.
+        with self.store.connect() as db:
+            db.execute('INSERT INTO audit VALUES(?,?,?,?)',
+                       (time.time(), 'reconfirm', self.device,
+                        json.dumps({'lease_id': lease['lease_id']}, ensure_ascii=False)))
+            db.commit()
+        for row in self.store.audit():
+            self.assertNotIn(lease['lease_id'], row['owner'] or '')
+
+    def test_force_release_is_not_reachable_through_release(self):
+        self.store.claim('ai', tool='Codex')
+        with self.assertRaises(TypeError):
+            self.store.release(device_id=self.device, force=True)
+        with self.assertRaises(WardenError):
+            self.store.force_release(self.device)
+        self.assertEqual(self.store.list()[0]['lease_state'], 'active')
+        self.store.force_release(self.device, acknowledge=True)
+        self.assertEqual(self.store.list()[0]['lease_state'], None)
+
+    def test_adb_failure_does_not_move_live_leases(self):
+        lease = self.store.claim('ai', tool='Codex')
+        with patch('device_warden.store.run_adb', side_effect=OSError('missing')):
+            with self.assertRaises(WardenError):
+                self.store.discover()
+        row = self.store.list()[0]
+        self.assertEqual(row['lease_state'], 'active')
+        self.assertEqual(row['connection'], 'unknown')
+        # ADB health recovers once discovery works again.
+        self.store.discover(DEVICES)
+        self.assertEqual(self.store.list()[0]['connection'], 'connected')
+        self.store.heartbeat(lease['lease_id'])
+
+    def test_adb_does_not_hold_a_write_lock_while_running(self):
+        lease = self.store.claim('ai', tool='Codex')
+        seen = {}
+
+        def fake_run(args, timeout):
+            # A competing writer must succeed while adb is still running.
+            other = Store(self.store.path)
+            try:
+                other.recover_stale()
+                seen['locked'] = False
+            except sqlite3.OperationalError:
+                seen['locked'] = True
+            return subprocess.CompletedProcess(args, 0, '', '')
+
+        with patch('device_warden.store.run_adb', side_effect=fake_run):
+            self.store.adb(lease['lease_id'], ['shell', 'getprop'])
+        self.assertFalse(seen['locked'])
 
     def test_data_dir_is_shared_across_runtimes(self):
         with patch.dict(os.environ, {'USERPROFILE': r'C:\Users\example'}, clear=False):
@@ -213,6 +280,17 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(display_name({'model': 'CPH2699'}), 'CPH2699')
         self.assertEqual(display_name({'serial': '6ad7aa65'}), '6ad7aa65')
         self.assertEqual(display_name({}), '不明な端末')
+
+    def test_owner_label_identifies_the_session(self):
+        self.assertEqual(owner_label({'kind': 'human'}), '自分')
+        self.assertEqual(owner_label({'kind': None}), 'なし')
+        self.assertEqual(owner_label({'kind': 'ai', 'tool': 'Codex'}), 'Codex')
+        self.assertEqual(owner_label({'kind': 'ai', 'tool': 'OpenCode',
+                                      'title': 'Gallery fix'}), 'OpenCode: Gallery fix')
+        self.assertEqual(owner_label({'kind': 'ai', 'tool': 'OpenCode',
+                                      'session_id': 'ses_0123456789abcdef'}), 'OpenCode: ses_01234567…')
+        self.assertEqual(owner_label({'kind': 'ai', 'tool': 'OpenCode', 'title': '',
+                                      'session_id': ''}), 'OpenCode')
 
     def test_discovery_reads_marketing_name(self):
         def fake(args, timeout):

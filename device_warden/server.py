@@ -2,6 +2,7 @@ import hmac
 import json
 import os
 import secrets
+import sqlite3
 import subprocess
 import threading
 import time
@@ -67,6 +68,7 @@ def make_handler(store, token):
                            'heartbeat': store.heartbeat, 'release': store.release, 'adb': store.adb,
                            'audit': store.audit,
                            'reconfirm': store.reconfirm, 'scrcpy': store.launch_scrcpy,
+                           'force-release': store.force_release,
                            'update': store.update_device, 'delete': store.delete_device,
                            'default-policy': store.default_policy}
                 action = self.path.strip('/')
@@ -116,10 +118,12 @@ def main():
 
     def monitor():
         while True:
+            # A transient SQLite lock must not kill the monitor thread: without it,
+            # connection state and heartbeat timeouts stop being updated for good.
             try:
                 store.recover_stale()
                 store.discover()
-            except WardenError:
+            except (WardenError, sqlite3.OperationalError):
                 pass
             time.sleep(10)
     threading.Thread(target=monitor, daemon=True).start()
