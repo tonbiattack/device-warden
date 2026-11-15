@@ -46,7 +46,12 @@ def fake_run(action, **kwargs):
     if action in ('apps-matrix', 'apps-scan'):
         return MATRIX
     if action == 'list':
-        return []
+        # Keep the device tab populated so the empty-state message does not show.
+        return [{'id': device['id'], 'display_name': device['display_name'],
+                 'connection': device['connection'], 'transport': 'usb',
+                 'kind': None, 'tool': None, 'title': None, 'session_id': None,
+                 'lease_state': None, 'ai_allowed': 1, 'hidden': 0, 'last_seen': NOW}
+                for device in DEVICES]
     return None
 
 
@@ -87,15 +92,13 @@ def main():
     import device_warden.gui as gui
     gui.call = fake_run
     root = tk.Tk()
-    root.withdraw()
     app = App(root)
-    app.open_apps()
-    window = app.apps_window
-    window.geometry('1000x420+120+120')
-    window.update()
+    root.geometry('1100x470+120+120')
+    root.update()
+    app.notebook.select(1)
     root.update()
     target = Path(__file__).resolve().parent.parent / 'docs' / 'apps-screenshot.png'
-    grab(int(window.wm_frame(), 16)).save(target)
+    grab(int(root.wm_frame(), 16)).save(target)
     root.destroy()
     print(f'wrote {target}')
 

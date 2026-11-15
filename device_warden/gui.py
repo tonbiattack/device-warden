@@ -57,28 +57,48 @@ class App:
         ttk.Label(root, text='「管理内では未確保」は空きの保証ではありません。直接ADB操作や物理的な利用は検知できません。', foreground='#a03319').pack(pady=6)
         self.message = ttk.Label(root, text='')
         self.message.pack()
+        self.notebook = ttk.Notebook(root)
+        self.notebook.pack(fill='both', expand=True, padx=8, pady=4)
+        devices = ttk.Frame(self.notebook)
+        apps = ttk.Frame(self.notebook)
+        self.notebook.add(devices, text='端末')
+        self.notebook.add(apps, text='アプリ')
         columns = ('name', 'connection', 'status', 'owner', 'policy', 'seen')
-        self.tree = ttk.Treeview(root, columns=columns, show='headings', height=12)
+        self.tree = ttk.Treeview(devices, columns=columns, show='headings', height=12)
         for key, title, width in [('name','端末',180),('connection','ADB',110),('status','利用可否',200),('owner','確保者',240),('policy','AI',80),('seen','最終確認',150)]:
             self.tree.heading(key, text=title)
             self.tree.column(key, width=width)
-        self.tree.pack(fill='both', expand=True, padx=8)
-        bar = ttk.Frame(root)
+        self.tree.pack(fill='both', expand=True)
+        bar = ttk.Frame(devices)
         bar.pack(fill='x', pady=5)
         for label, fn in [('最新取得', self.refresh), ('自分が確保', self.claim), ('解放', self.release), ('強制解放', self.force), ('復旧', self.recover_lease), ('AI許可切替', self.policy), ('詳細', self.details)]:
             ttk.Button(bar, text=label, command=fn).pack(side='left')
-        bar = ttk.Frame(root)
+        bar = ttk.Frame(devices)
         bar.pack(fill='x', pady=5)
-        for label, fn in [('再確認', self.reconfirm), ('scrcpy', self.scrcpy), ('名前変更', self.rename), ('表示切替', self.toggle_hidden), ('削除', self.delete), ('新規端末のAI既定', self.default_policy), ('履歴', self.audit), ('自動起動', self.autostart), ('アプリ', self.open_apps)]:
+        for label, fn in [('再確認', self.reconfirm), ('scrcpy', self.scrcpy), ('名前変更', self.rename), ('表示切替', self.toggle_hidden), ('削除', self.delete), ('新規端末のAI既定', self.default_policy), ('履歴', self.audit), ('自動起動', self.autostart)]:
             ttk.Button(bar, text=label, command=fn).pack(side='left')
-        ttk.Checkbutton(root, text='非表示端末も表示', variable=self.hidden, command=self.load).pack()
+        ttk.Checkbutton(devices, text='非表示端末も表示', variable=self.hidden, command=self.load).pack()
+        ttk.Label(apps, text='接続中の端末のみ再取得します。未接続の端末は最後に取得した値を表示します。', foreground='#a03319').pack(pady=2)
+        self.apps_tree = ttk.Treeview(apps, columns=('app',), show='headings', height=12)
+        self.apps_tree.heading('app', text='アプリ')
+        self.apps_tree.column('app', width=240)
+        self.apps_tree.pack(fill='both', expand=True)
+        app_bar = ttk.Frame(apps)
+        app_bar.pack(fill='x', pady=5)
+        ttk.Button(app_bar, text='再取得', command=self.scan_apps).pack(side='left')
+        ttk.Button(app_bar, text='対象アプリ追加', command=self.track_app).pack(side='left')
+        ttk.Button(app_bar, text='対象から削除', command=self.untrack_app).pack(side='left')
         root.protocol('WM_DELETE_WINDOW', root.withdraw)
-        self.apps_window = None
+        self.apps_devices = []
         self.load()
+        self.refresh_apps()
+        self.tick()
         self.tick()
 
     def tick(self):
         self.load()
+        if self.notebook.index('current') == 1:
+            self.refresh_apps()
         self.root.after(10000, self.tick)
 
     def run(self, action, **args):
@@ -149,41 +169,12 @@ class App:
             self.run('force-release', acknowledge=True, device_id=d['id'])
             self.load()
 
-    def open_apps(self):
-        """Open the app/version matrix in its own window.
-
-        The matrix is wider than the device list, and mixing it into the device
-        tree would make the availability view harder to scan.
-        """
-        if self.apps_window and tk.Toplevel.winfo_exists(self.apps_window):
-            self.apps_window.lift()
-            return
-        window = tk.Toplevel(self.root)
-        window.title('Device Warden — アプリ')
-        window.geometry('980x520')
-        self.apps_window = window
-        frame = ttk.Frame(window)
-        frame.pack(fill='both', expand=True, padx=8, pady=6)
-        note = ttk.Label(window, text='接続中の端末のみ再取得します。未接続の端末は最後に取得した値を表示します。',
-                         foreground='#a03319')
-        note.pack(pady=2)
-        columns = ('app',)
-        tree = ttk.Treeview(frame, columns=columns, show='headings', height=14)
-        tree.heading('app', text='アプリ')
-        tree.column('app', width=240)
-        tree.pack(fill='both', expand=True, side='left')
-        bar = ttk.Frame(window)
-        bar.pack(fill='x', padx=8, pady=4)
-        ttk.Button(bar, text='再取得', command=lambda: self.scan_apps(tree)).pack(side='left')
-        ttk.Button(bar, text='対象アプリ追加', command=lambda: self.track_app(tree)).pack(side='left')
-        ttk.Button(bar, text='対象から削除', command=lambda: self.untrack_app(tree)).pack(side='left')
-        self.scan_apps(tree)
-
-    def scan_apps(self, tree):
+    def scan_apps(self):
         self.run('apps-scan')
-        self.refresh_apps(tree)
+        self.refresh_apps()
 
-    def refresh_apps(self, tree):
+    def refresh_apps(self):
+        tree = self.apps_tree
         matrix = self.run('apps-matrix')
         if matrix is None:
             return
@@ -222,20 +213,20 @@ class App:
         if not matrix['apps']:
             self.message.config(text='対象アプリが未登録です。「対象アプリ追加」からパッケージを登録してください。')
 
-    def track_app(self, tree):
-        package = simpledialog.askstring('対象アプリ', 'パッケージ名（例: com.example.app）', parent=tree)
+    def track_app(self):
+        package = simpledialog.askstring('対象アプリ', 'パッケージ名（例: com.example.app）', parent=self.root)
         if package:
-            label = simpledialog.askstring('対象アプリ', '表示名（任意）', parent=tree)
+            label = simpledialog.askstring('対象アプリ', '表示名（任意）', parent=self.root)
             self.run('apps-track', package=package.strip(), label=(label or '').strip() or None)
-            self.scan_apps(tree)
+            self.scan_apps()
 
-    def untrack_app(self, tree):
-        selected = tree.selection()
+    def untrack_app(self):
+        selected = self.apps_tree.selection()
         if not selected:
             messagebox.showinfo('対象アプリ', '削除するアプリを選択してください。')
             return
         self.run('apps-untrack', package=selected[0])
-        self.refresh_apps(tree)
+        self.refresh_apps()
 
     def reconfirm(self):
         d = self.require_selection()
