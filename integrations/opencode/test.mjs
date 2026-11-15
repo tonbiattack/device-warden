@@ -102,6 +102,18 @@ try {
     await tool.execute({ action: "release", lease_id: `lease-${sessionID}` }, { sessionID })
   }
 
+  // A session must not release or drive another session's lease.
+  await tool.execute({ action: "claim" }, { sessionID: "owner" })
+  await assert.rejects(
+    tool.execute({ action: "release", lease_id: "lease-owner" }, { sessionID: "intruder" }),
+    /別のセッション/)
+  await assert.rejects(
+    tool.execute({ action: "adb", lease_id: "lease-owner", args: ["shell", "id"] }, { sessionID: "intruder" }),
+    /別のセッション/)
+  assert.equal(timers.size, 1, "a rejected release must leave the owner's heartbeat alone")
+  await tool.execute({ action: "release", lease_id: "lease-owner" }, { sessionID: "owner" })
+  assert.equal(timers.size, 0)
+
   // Plugin unload clears any remaining timers.
   await tool.execute({ action: "claim" }, { sessionID: "session-three" })
   assert.equal(timers.size, 1)

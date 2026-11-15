@@ -183,6 +183,8 @@ OpenCode の設定にある `plugins` へ、このプラグインのディレク
 
 リースは自分の `lease_id` か、明示的な強制解放でのみ解放されます。切断・Broker再起動・heartbeat停止では `recovery_required` へ移り、空きには戻しません。USBとWi-Fiのシリアルは意図的に別端末として扱い、再接続を別の個体と取り違えないようにしています。
 
+`lease_id` は解放の資格情報なので、`device-warden list` / `reconfirm` / `audit` の出力には含まれません。監査履歴には照合用に短縮した参照だけを残します。強制解放はGUI専用の別操作（`force-release`）で、明示的な同意なしには実行できません。
+
 設計資料: [仕様書](docs/SPEC.md) · [技術設計](docs/ARCHITECTURE.md)
 
 ## 設定

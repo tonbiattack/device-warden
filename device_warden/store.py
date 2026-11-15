@@ -160,7 +160,6 @@ class Store:
                     self._identify(db, row['id'], serial, model, product)
             self._mark_recovery(db, "device_id IN (SELECT id FROM devices WHERE connection != 'connected')",
                                 (), 'connection_lost', now)
-            db.execute("INSERT OR REPLACE INTO settings VALUES('adb_health', 'ok')")
             db.commit()
 
     def _identify(self, db, device_id, serial, model, product):
@@ -187,14 +186,14 @@ class Store:
         """Record that ADB itself could not be run.
 
         This is a broker-level fault, not evidence that any device disconnected,
-        so it must not move live leases. Marking the connection axis as unknown is
-        honest (we cannot verify it right now) and keeps `adb`/`claim` blocked, but
-        the lease axis stays untouched until a per-device check proves a loss.
+        so it must not move live leases: only a per-device observation may do
+        that. The connection axis still falls to `unknown` because a claim on an
+        unverifiable device must not succeed, and the next successful discovery
+        restores the real state.
         """
         with self.connect() as db:
             db.execute('BEGIN IMMEDIATE')
             db.execute("UPDATE devices SET connection='unknown'")
-            db.execute("INSERT OR REPLACE INTO settings VALUES('adb_health', 'unavailable')")
             db.commit()
 
     def recover_restart(self):

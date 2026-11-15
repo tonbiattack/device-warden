@@ -19,11 +19,14 @@ async function broker(action: string, body: object) {
   } catch {
     throw new BrokerFailure("Brokerトークンを読み取れません")
   }
+  // ADB runs for up to a minute inside the Broker, so a shorter client timeout
+  // would report success as failure and invite a duplicate operation.
+  const timeout = action === "adb" ? 70_000 : 15_000
   let response: Response
   try {
     response = await fetch(`http://127.0.0.1:47631/${action}`, {
       method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify(body), signal: AbortSignal.timeout(15000),
+      body: JSON.stringify(body), signal: AbortSignal.timeout(timeout),
     })
   } catch {
     throw new BrokerFailure("Brokerに接続できないか応答がありません")
@@ -45,10 +48,15 @@ export default Plugin.define({
     // Fail closed per lease and session. Do not store an exception message:
     // network errors may contain local paths or other sensitive information.
     const failures = new Map<string, { sessionID: string; at: string; reason: string }>()
+    // Lease IDs are release credentials. Remember which session obtained each
+    // one so a session cannot release or drive another session's device.
+    const owners = new Map<string, string>()
+    const owns = (leaseID: string, sessionID: string) => owners.get(leaseID) === sessionID
     const stop = (leaseID: string) => {
       const timer = heartbeats.get(leaseID)
       if (timer) clearInterval(timer)
       heartbeats.delete(leaseID)
+      owners.delete(leaseID)
     }
     const cleanup = () => {
       for (const leaseID of [...heartbeats.keys()]) stop(leaseID)
@@ -57,6 +65,7 @@ export default Plugin.define({
     const track = (leaseID: string, sessionID: string) => {
       stop(leaseID)
       failures.delete(leaseID)
+      owners.set(leaseID, sessionID)
       // The Broker treats 120s without a heartbeat as recovery_required.
       const timer = setInterval(async () => {
         try {
@@ -65,6 +74,7 @@ export default Plugin.define({
           // Ignore responses from a timer that has already been released or replaced.
           if (heartbeats.get(leaseID) !== timer) return
           stop(leaseID)
+          owners.set(leaseID, sessionID)
           failures.set(leaseID, { sessionID, at: new Date().toISOString(),
             reason: error instanceof BrokerFailure ? error.reason : "Brokerとの通信またはリースの確認に失敗しました" })
         }
@@ -82,9 +92,17 @@ export default Plugin.define({
         options: { codemode: true },
         execute: async (input, context) => {
           const { action, ...body } = input as { action: string; device_id?: string; lease_id?: string; args?: string[] }
+          // A lease belongs to the session that claimed it. Without this check a
+          // session could release or run adb against another session's device.
+          if (body.lease_id && owners.has(body.lease_id) && !owns(body.lease_id, context.sessionID)) {
+            throw new Error("このリースは別のセッションが保持しています。自分の端末を list で確認してください。")
+          }
           const failed = [...failures.values()].find((item) => item.sessionID === context.sessionID)
           if (failed && action !== "release") {
-            throw new Error(`heartbeat失敗（${failed.at}）: ${failed.reason}。ADB操作や再確保は行わず、利用状況を確認してください。明示的にreleaseするか、管理者に確認を依頼してください。`)
+            const held = [...failures.entries()]
+              .filter(([, item]) => item.sessionID === context.sessionID)
+              .map(([leaseID]) => leaseID).join(", ")
+            throw new Error(`heartbeat失敗（${failed.at}）: ${failed.reason}。対象リース: ${held}。ADB操作や再確保は行わず、利用状況を確認してください。そのリースだけをreleaseするか、管理者に確認を依頼してください。`)
           }
           let payload: object = body
           if (action === "claim") {
