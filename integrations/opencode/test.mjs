@@ -39,7 +39,7 @@ try {
     const body = JSON.parse(options.body)
     const action = String(url).split("/").pop()
     requests.push({ url, action, body, auth: options.headers.Authorization })
-    const result = action === "claim" ? { lease_id: `lease-${body.session_id}` }
+    const result = action === "claim" ? { lease_id: `lease-${body.session_id}`, device_id: `device-${body.session_id}` }
       : action === "heartbeat" ? { exit_code: 0 } : null
     return { ok: true, json: async () => ({ result }) }
   }
@@ -96,8 +96,11 @@ try {
       ? { ok: false, status, json: async () => ({ error: "failed" }) }
       : healthyFetch(url, options)
     await timer.callback()
-    await assert.rejects(tool.execute({ action: "list" }, { sessionID }),
-      status === 401 ? /認証に失敗/ : /解放済みか要確認/)
+    // `list` is allowed while stalled so the session can find its device; a
+    // write action must still fail.
+    await tool.execute({ action: "list" }, { sessionID })
+    await assert.rejects(tool.execute({ action: "adb", lease_id: `lease-${sessionID}`, args: ["shell", "id"] },
+      { sessionID }), /heartbeat失敗/)
     globalThis.fetch = healthyFetch
     await tool.execute({ action: "release", lease_id: `lease-${sessionID}` }, { sessionID })
   }
@@ -112,6 +115,46 @@ try {
     /別のセッション/)
   assert.equal(timers.size, 1, "a rejected release must leave the owner's heartbeat alone")
   await tool.execute({ action: "release", lease_id: "lease-owner" }, { sessionID: "owner" })
+  assert.equal(timers.size, 0)
+
+  // Recovery: a session that lost its lease ID can release by device ID after
+  // `list` reports owns_lease, but another session cannot.
+  await tool.execute({ action: "claim" }, { sessionID: "recovery" })
+  const recoveryTimer = [...timers.values()][0]
+  globalThis.fetch = async (url, options) => {
+    const body = JSON.parse(options.body)
+    const action = String(url).split("/").pop()
+    if (action === "heartbeat") return { ok: false, status: 409, json: async () => ({ error: "stale" }) }
+    if (action === "list") {
+      return { ok: true, json: async () => ({ result: [
+        { id: "device-recovery", owns_lease: body.session_id === "recovery" },
+      ] }) }
+    }
+    if (action === "release") {
+      requests.push({ url, action, body })
+      return { ok: true, json: async () => ({ result: { device_id: body.device_id, state: "released" } }) }
+    }
+    return healthyFetch(url, options)
+  }
+  await recoveryTimer.callback()
+  await tool.execute({ action: "list" }, { sessionID: "recovery" })
+  // Another session's list call must not erase the device this session can release.
+  await tool.execute({ action: "list" }, { sessionID: "intruder" })
+  await assert.rejects(
+    tool.execute({ action: "adb", lease_id: "lease-recovery", args: ["shell", "id"] }, { sessionID: "recovery" }),
+    /heartbeat失敗/)
+  await assert.rejects(
+    tool.execute({ action: "release", device_id: "device-recovery" }, { sessionID: "intruder" }),
+    /自分のリースではありません/)
+  const released = JSON.parse((await tool.execute(
+    { action: "release", device_id: "device-recovery" }, { sessionID: "recovery" })).content)
+  assert.equal(released.device_id, "device-recovery")
+  globalThis.fetch = healthyFetch
+  const releaseCalls = requests.filter((r) => r.action === "release")
+  const releaseCall = releaseCalls.at(-1)
+  assert.equal(releaseCall.body.session_id, "recovery")
+  assert.equal(releaseCall.body.device_id, "device-recovery")
+  assert.equal(releaseCall.body.lease_id, undefined)
   assert.equal(timers.size, 0)
 
   // Plugin unload clears any remaining timers.

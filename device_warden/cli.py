@@ -42,14 +42,25 @@ def main():
     sub.choices['audit'].add_argument('--device', dest='device_id')
     for name in ('reconfirm', 'scrcpy'):
         sub.add_parser(name).add_argument('device_id')
+    recover = sub.add_parser('recover', help='要確認のリースを復旧する')
+    recover.add_argument('device_id')
+    recover.add_argument('--acknowledge', action='store_true', required=True)
     claim = sub.add_parser('claim')
     claim.add_argument('--device', dest='device_id')
     claim.add_argument('--tool', required=True)
     for option in ('session-id', 'title', 'project', 'workdir'):
         claim.add_argument('--' + option)
     claim.add_argument('--pid', type=int)
-    for name in ('heartbeat', 'release'):
+    claim.add_argument('--resume', action='store_true', help='自分が中断した要確認リースを引き継ぐ')
+    for name in ('heartbeat',):
         sub.add_parser(name).add_argument('lease_id')
+    release = sub.add_parser('release')
+    release.add_argument('lease_id', nargs='?')
+    release.add_argument('--device', dest='device_id')
+    release.add_argument('--session-id', required=False)
+    force = sub.add_parser('force-release')
+    force.add_argument('device_id')
+    force.add_argument('--acknowledge', action='store_true', required=True)
     adb = sub.add_parser('adb')
     adb.add_argument('lease_id')
     adb.add_argument('args', nargs=argparse.REMAINDER)
@@ -100,6 +111,10 @@ def main():
                 print('操作が中断されたためリースを保持しました。状況を確認してください。', file=sys.stderr)
                 print(json.dumps({'lease_id': lease_id}, ensure_ascii=False), file=sys.stderr)
                 return 1
+        if command == 'force-release':
+            args['acknowledge'] = True
+        if command == 'claim' and args.get('resume') and not args.get('session_id'):
+            raise WardenError('--resume には --session-id が必要です。')
         if command == 'apps':
             return apps_command(parser, args)
         result = call('list' if command == 'status' else command, **args)

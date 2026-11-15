@@ -88,9 +88,9 @@ Brokerを起動し、別のターミナルでトレイを起動します。
 
 端末ごとに、名前・接続方法・ADB状態・最も目立つ利用可否・確保者・最終確認時刻を表示します。表示名は端末自身の情報から作ります。別名があればそれを使い、次にマーケティング名（`Redmi Pad SE 8.7`）、最後にブランドと型番（`OPPO CPH2699`）の順です。素の型番ばかりになることはありません。
 
-操作は **自分が確保**、**解放**、**強制解放**（警告付き）、**AI許可切替**、**再確認**、**scrcpy**、**名前変更**、**表示切替**、**削除**、**履歴**、**自動起動** です。一覧とトレイアイコンは10秒ごとに更新されます。AIの確保・解放時はWindows通知が出ます。
+操作は **自分が確保**、**解放**、**強制解放**（警告付き）、**復旧**、**AI許可切替**、**再確認**、**scrcpy**、**名前変更**、**表示切替**、**削除**、**履歴**、**自動起動** です。一覧とトレイアイコンは10秒ごとに更新されます。AIの確保・解放時はWindows通知が出ます。
 
-**再確認** は選択端末のADB状態を取り直し、要確認の理由（接続切れ・ADB異常・Broker再起動・heartbeat停止）と検出時刻を確認する操作です。接続が戻ってもリースは自動解放されません。**scrcpy** は、自分が確保した接続中の端末でのみ起動し、PATH上の `scrcpy` を使います。起動しただけではリースは解放されません。
+**再確認** は選択端末のADB状態を取り直し、要確認の理由（接続切れ・ADB異常・Broker再起動・heartbeat停止）と検出時刻を確認する操作です。接続が戻ってもリースは自動解放されません。**復旧** は要確認のリースだけを解放する操作で、有効なリースには使えません（その場合は強制解放）。**scrcpy** は、自分が確保した接続中の端末でのみ起動し、PATH上の `scrcpy` を使います。起動しただけではリースは解放されません。
 
 ### 利用可否の表示
 
@@ -134,9 +134,14 @@ device-warden claim --tool Codex --device <device_id>
 device-warden adb <lease_id> shell getprop
 device-warden heartbeat <lease_id>
 device-warden release <lease_id>
+device-warden release --device <device_id> --session-id <session_id>
+device-warden recover <device_id> --acknowledge
+device-warden force-release <device_id> --acknowledge
 device-warden audit
 device-warden with-device --tool Codex -- shell getprop
 ```
+
+セッションは自分のリースを `--device` と `--session-id` の組で解放できます。`list` はAIリースの `lease_id` を返しませんが、所有しているリースには `owns_lease: true` が付くため、中断後にIDを失っても自分の端末だけを解放できます。他セッションのリースは `自分のリースではありません` で拒否されます。`recover` は要確認のリースだけを対象とし、有効なリースには使えません（`force-release` と分離）。いずれも `--acknowledge` が必要で、監査ログに記録されます。`claim --resume --session-id ... --device ...` は、自分が中断した要確認リースを引き継ぎます。
 
 `with-device` は指定のADBサブコマンドを1回だけBroker経由で実行します。確保に失敗すればADBを実行せず、成功時のみ解放します。ADBの失敗や中断時は安全のためリースを保持し、標準エラーへリースIDを出力します。この出力は秘密として扱い、作業状況を確認してから解放してください。強制終了などでIDが表示されない場合はGUIで所有者を確認してください。任意の子プロセスやGradleの仲介は対象外です。
 

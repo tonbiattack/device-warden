@@ -65,7 +65,7 @@ class App:
         self.tree.pack(fill='both', expand=True, padx=8)
         bar = ttk.Frame(root)
         bar.pack(fill='x', pady=5)
-        for label, fn in [('最新取得', self.refresh), ('自分が確保', self.claim), ('解放', self.release), ('強制解放', self.force), ('AI許可切替', self.policy), ('詳細', self.details)]:
+        for label, fn in [('最新取得', self.refresh), ('自分が確保', self.claim), ('解放', self.release), ('強制解放', self.force), ('復旧', self.recover_lease), ('AI許可切替', self.policy), ('詳細', self.details)]:
             ttk.Button(bar, text=label, command=fn).pack(side='left')
         bar = ttk.Frame(root)
         bar.pack(fill='x', pady=5)
@@ -247,6 +247,22 @@ class App:
             messagebox.showinfo('再確認', f"ADB: {result['connection']}\n"
                                 f"リース: {'要確認' if result['lease_state'] == 'recovery_required' else result['lease_state'] or 'なし'}\n\n"
                                 '接続が戻ってもリースは自動解放されません。所有者を確認してから操作してください。')
+
+    def recover_lease(self):
+        """Clear a lease stuck in recovery from the operator's UI."""
+        d = self.require_selection()
+        if not d:
+            return
+        if d['lease_state'] != 'recovery_required':
+            messagebox.showinfo('復旧', '要確認状態のリースではありません。')
+            return
+        if not messagebox.askyesno(
+                '復旧',
+                '要確認のリースを解放します。\n'
+                '所有していたセッションが作業を続けている場合は競合する可能性があります。'):
+            return
+        self.run('recover', device_id=d['id'], acknowledge=True)
+        self.load()
 
     def scrcpy(self):
         d = self.require_selection()

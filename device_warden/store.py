@@ -246,7 +246,7 @@ class Store:
             db.execute("UPDATE leases SET state='recovery_required', recovery_reason=?, recovery_at=? WHERE id=?",
                        (reason, now, row['id']))
 
-    def list(self, include_hidden=False):
+    def list(self, include_hidden=False, session_id=None):
         with self.connect() as db:
             rows = db.execute('''SELECT d.*, l.id AS lease_id, l.kind, l.tool, l.session_id,
                 l.title, l.project, l.workdir, l.acquired_at, l.heartbeat_at, l.state AS lease_state,
@@ -256,18 +256,37 @@ class Store:
                 ORDER BY COALESCE(d.alias,d.market_name,d.brand || ' ' || d.model,d.model,d.serial)''', (include_hidden,)).fetchall()
             devices = [dict(row) for row in rows]
             for device in devices:
+                # A session may release its own lease by device_id, but lease IDs of
+                # AI leases are release credentials and stay hidden from `list`.
+                device['owns_lease'] = bool(device['lease_id']) and bool(session_id) \
+                    and device['session_id'] == session_id
                 if device['kind'] == 'ai':
-                    device['lease_id'] = None  # A list operation must not disclose AI release credentials.
+                    device['lease_id'] = None
                 device['display_name'] = display_name(device)
             return devices
 
-    def claim(self, kind, device_id=None, tool=None, session_id=None, title=None, project=None, workdir=None, pid=None):
+    def claim(self, kind, device_id=None, tool=None, session_id=None, title=None, project=None, workdir=None, pid=None, resume=False):
         if kind not in ('human', 'ai') or (kind == 'ai' and not tool):
             raise WardenError('所有者の種類とAIツール名を指定してください。')
         if tool and tool.lower() == 'opencode' and not session_id:
             raise WardenError('OpenCodeのセッションIDが必要です。')
         with self.connect() as db:
             db.execute('BEGIN IMMEDIATE')
+            # A session resuming after an interruption may take its own
+            # recovery_required lease back. Another session's lease is left alone.
+            if resume and session_id and device_id:
+                own = db.execute("""SELECT id FROM leases WHERE device_id=? AND session_id=?
+                    AND state='recovery_required'""", (device_id, session_id)).fetchone()
+                if own:
+                    db.execute("UPDATE leases SET state='active', recovery_reason=NULL, "
+                               "recovery_at=NULL, heartbeat_at=? WHERE id=?", (time.time(), own['id']))
+                    db.execute('INSERT INTO audit VALUES(?,?,?,?)',
+                               (time.time(), 'resumed', device_id,
+                                json.dumps({'session_id': session_id}, ensure_ascii=False)))
+                    db.commit()
+                    device = db.execute('SELECT * FROM devices WHERE id=?', (device_id,)).fetchone()
+                    return {'lease_id': own['id'], 'device_id': device_id,
+                            'serial': device['serial'], 'resumed': True}
             query = """SELECT * FROM devices d WHERE d.hidden=0 AND (? IS NULL OR d.id=?)
               AND NOT EXISTS (SELECT 1 FROM leases l WHERE l.device_id=d.id AND l.state IN ('active','recovery_required'))"""
             if kind == 'ai':
@@ -311,12 +330,28 @@ class Store:
             raise WardenError('ADBコマンドを実行できませんでした。') from exc
         return {'exit_code': result.returncode, 'stdout': result.stdout, 'stderr': result.stderr}
 
-    def release(self, lease_id):
-        """Release a lease the caller holds."""
+    def release(self, lease_id=None, device_id=None, session_id=None):
+        """Release a lease the caller holds.
+
+        Either the lease ID or the device ID may be used. The device form is for
+        the owning session: it must also pass its `session_id`, and the lease is
+        only released when that session actually owns it. Without this, an
+        interrupted session could see `recovery_required` but never learn its own
+        release credential, and the device would stay blocked.
+        """
+        if not lease_id and not device_id:
+            raise WardenError('lease_id または device_id が必要です。')
         with self.connect() as db:
             db.execute('BEGIN IMMEDIATE')
-            row = db.execute("SELECT * FROM leases WHERE id=? AND state IN ('active','recovery_required')",
-                             (lease_id,)).fetchone()
+            if lease_id:
+                row = db.execute("SELECT * FROM leases WHERE id=? AND state IN ('active','recovery_required')",
+                                 (lease_id,)).fetchone()
+            else:
+                row = db.execute("SELECT * FROM leases WHERE device_id=? AND state IN ('active','recovery_required')",
+                                 (device_id,)).fetchone()
+                if row and (not session_id or row['session_id'] != session_id):
+                    # Do not reveal whether another session holds the device.
+                    raise WardenError('自分のリースではありません。')
             if not row:
                 raise WardenError('リースが見つかりません。')
             db.execute("UPDATE leases SET state='released' WHERE id=?", (row['id'],))
@@ -324,6 +359,36 @@ class Store:
                                ensure_ascii=False)
             db.execute('INSERT INTO audit VALUES(?,?,?,?)', (time.time(), 'release', row['device_id'], owner))
             db.commit()
+            return {'device_id': row['device_id'], 'state': 'released'}
+
+    def recover(self, device_id, acknowledge=False, session_id=None):
+        """Clear a `recovery_required` lease without interrupting a live one.
+
+        This is the operator path from the CLI. It only accepts leases that are
+        already in recovery, so it cannot take a healthy lease away from another
+        session, and it never runs automatically.
+        """
+        if acknowledge is not True:
+            raise WardenError('復旧には acknowledge が必要です。')
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row = db.execute("SELECT * FROM leases WHERE device_id=? AND state='recovery_required'",
+                             (device_id,)).fetchone()
+            if not row:
+                active = db.execute("SELECT 1 FROM leases WHERE device_id=? AND state='active'",
+                                    (device_id,)).fetchone()
+                if active:
+                    raise WardenError('この端末は現在も有効なリースです。強制解放を使用してください。')
+                raise WardenError('要確認のリースが見つかりません。')
+            if session_id and row['session_id'] != session_id:
+                raise WardenError('自分のリースではありません。')
+            db.execute("UPDATE leases SET state='released' WHERE id=?", (row['id'],))
+            owner = json.dumps({'kind': row['kind'], 'tool': row['tool'], 'session_id': row['session_id'],
+                                'reason': row['recovery_reason'], 'by': session_id or 'operator'},
+                               ensure_ascii=False)
+            db.execute('INSERT INTO audit VALUES(?,?,?,?)', (time.time(), 'recovered', device_id, owner))
+            db.commit()
+            return {'device_id': device_id, 'state': 'released'}
 
     def force_release(self, device_id, acknowledge=False):
         """Interrupt whoever holds a device. Separate from `release` on purpose.
