@@ -18,10 +18,10 @@ def status(d):
     if d['kind'] == 'ai':
         return 'AI使用中'
     if d['connection'] == 'connected':
-        return '自分が使用可能'
+        return '管理内では未確保'
     if d['connection'] == 'disconnected':
-        return '自分が使用可能（ADB未接続）'
-    return 'ADB状態要確認（未確保）'
+        return '管理内では未確保（ADB未接続）'
+    return '管理内では未確保（ADB要確認）'
 
 
 def stamp(value):
@@ -35,7 +35,7 @@ class App:
         root.geometry('1000x520')
         self.rows = []
         self.hidden = tk.BooleanVar(value=False)
-        ttk.Label(root, text='管理外の直接ADB操作は検知・阻止できません。物理的な利用可否は保証されません。', foreground='#a03319').pack(pady=6)
+        ttk.Label(root, text='「管理内では未確保」は空きの保証ではありません。直接ADB操作や物理的な利用は検知できません。', foreground='#a03319').pack(pady=6)
         self.message = ttk.Label(root, text='')
         self.message.pack()
         columns = ('name', 'connection', 'status', 'owner', 'policy', 'seen')
@@ -50,7 +50,7 @@ class App:
             ttk.Button(bar, text=label, command=fn).pack(side='left')
         bar = ttk.Frame(root)
         bar.pack(fill='x', pady=5)
-        for label, fn in [('名前変更', self.rename), ('表示切替', self.toggle_hidden), ('削除', self.delete), ('新規端末のAI既定', self.default_policy), ('履歴', self.audit), ('自動起動', self.autostart)]:
+        for label, fn in [('再確認', self.reconfirm), ('scrcpy', self.scrcpy), ('名前変更', self.rename), ('表示切替', self.toggle_hidden), ('削除', self.delete), ('新規端末のAI既定', self.default_policy), ('履歴', self.audit), ('自動起動', self.autostart)]:
             ttk.Button(bar, text=label, command=fn).pack(side='left')
         ttk.Checkbutton(root, text='非表示端末も表示', variable=self.hidden, command=self.load).pack()
         root.protocol('WM_DELETE_WINDOW', root.withdraw)
@@ -93,9 +93,14 @@ class App:
     def selected(self):
         ids = self.tree.selection()
         if not ids:
-            messagebox.showinfo('端末', '端末を選択してください。')
             return None
         return next((d for d in self.rows if d['id'] == ids[0]), None)
+
+    def require_selection(self):
+        d = self.selected()
+        if not d:
+            messagebox.showinfo('端末', '端末を選択してください。')
+        return d
 
     def refresh(self):
         try:
@@ -105,13 +110,13 @@ class App:
             self.message.config(text=str(exc))
 
     def claim(self):
-        d = self.selected()
+        d = self.require_selection()
         if d:
             self.run('claim', kind='human', device_id=d['id'])
             self.load()
 
     def release(self):
-        d = self.selected()
+        d = self.require_selection()
         if d and d['kind'] == 'human':
             self.run('release', lease_id=d['lease_id'])
             self.load()
@@ -119,19 +124,36 @@ class App:
             messagebox.showinfo('解放', '自分の確保のみ通常解放できます。AIの確保は強制解放を使用してください。')
 
     def force(self):
-        d = self.selected()
+        d = self.require_selection()
         if d and d['kind'] and messagebox.askyesno('強制解放', '作業中のAIや利用者の操作を中断し、競合を引き起こす可能性があります。強制解放しますか？'):
             self.run('release', force=True, device_id=d['id'])
             self.load()
 
+    def reconfirm(self):
+        d = self.require_selection()
+        if not d:
+            return
+        result = self.run('reconfirm', device_id=d['id'])
+        if result:
+            self.load()
+            messagebox.showinfo('再確認', f"ADB: {result['connection']}\n"
+                                f"リース: {'要確認' if result['lease_state'] == 'recovery_required' else result['lease_state'] or 'なし'}\n\n"
+                                '接続が戻ってもリースは自動解放されません。所有者を確認してから操作してください。')
+
+    def scrcpy(self):
+        d = self.require_selection()
+        if d:
+            self.run('scrcpy', device_id=d['id'])
+            self.load()
+
     def policy(self):
-        d = self.selected()
+        d = self.require_selection()
         if d:
             self.run('update', device_id=d['id'], ai_allowed=int(not d['ai_allowed']))
             self.load()
 
     def rename(self):
-        d = self.selected()
+        d = self.require_selection()
         if d:
             name = simpledialog.askstring('名前変更', '別名（空欄で解除）', initialvalue=d['alias'] or '')
             if name is not None:
@@ -139,19 +161,20 @@ class App:
                 self.load()
 
     def toggle_hidden(self):
-        d = self.selected()
+        d = self.require_selection()
         if d:
             self.run('update', device_id=d['id'], hidden=int(not d['hidden']))
             self.load()
 
     def delete(self):
-        d = self.selected()
+        d = self.require_selection()
         if d and messagebox.askyesno('削除', '端末の登録を削除しますか？再検出される場合があります。'):
             self.run('delete', device_id=d['id'])
             self.load()
 
     def audit(self):
-        rows = self.run('audit')
+        d = self.selected() if self.tree.selection() else None
+        rows = self.run('audit', device_id=d['id'] if d else None)
         if not rows:
             messagebox.showinfo('履歴', '操作履歴はありません。')
             return
@@ -180,9 +203,13 @@ class App:
             self.message.config(text=str(exc))
 
     def details(self):
-        d = self.selected()
+        d = self.require_selection()
         if d:
-            messagebox.showinfo('詳細', '\n'.join([f"端末ID: {d['id']}", f"所有者: {d['tool'] or d['kind'] or 'なし'}", f"セッションID: {d['session_id'] or '不明'}", f"タイトル: {d['title'] or '不明'}", f"プロジェクト: {d['project'] or '不明'}", f"作業ディレクトリ: {d['workdir'] or '不明'}", f"確保開始: {stamp(d['acquired_at'])}", f"最終heartbeat: {stamp(d['heartbeat_at'])}"]))
+            reasons = {'connection_lost': '接続切れまたは未承認', 'adb_unavailable': 'ADB異常',
+                       'broker_restart': 'Broker再起動', 'heartbeat_timeout': 'heartbeat停止'}
+            messagebox.showinfo('詳細', '\n'.join([f"端末ID: {d['id']}", f"所有者: {d['tool'] or d['kind'] or 'なし'}", f"セッションID: {d['session_id'] or '不明'}", f"タイトル: {d['title'] or '不明'}", f"プロジェクト: {d['project'] or '不明'}", f"作業ディレクトリ: {d['workdir'] or '不明'}", f"確保開始: {stamp(d['acquired_at'])}", f"最終heartbeat: {stamp(d['heartbeat_at'])}",
+                f"要確認の理由: {reasons.get(d.get('recovery_reason'), '不明') if d['lease_state'] == 'recovery_required' else 'なし'}",
+                f"検出時刻: {stamp(d.get('recovery_at'))}"]))
 
     def default_policy(self):
         answer = messagebox.askyesnocancel('新規端末のAI既定', '新規端末のAI利用を既定で許可しますか？\n「いいえ」で禁止します。')
@@ -216,11 +243,32 @@ def main():
     tray = pystray.Icon('Device Warden', warden_icon.image('starting'), 'Device Warden', menu=pystray.Menu(
         pystray.MenuItem('開く', show, default=True), pystray.MenuItem('終了', quit_app)))
     state = {'name': 'starting'}
+    owners = {}
+
+    def notify_changes(rows):
+        """Notify on lease changes only; never on every refresh."""
+        current = {row['id']: (row['kind'], row['tool']) for row in rows}
+        if not owners:
+            owners.update(current)
+            return
+        for device_id, (kind, tool) in current.items():
+            before = owners.get(device_id, (None, None))
+            if before == (kind, tool):
+                continue
+            row = next(item for item in rows if item['id'] == device_id)
+            if kind == 'ai':
+                tray.notify(f"{row['display_name']} を {tool or 'AI'} が確保しました", 'Device Warden')
+            elif before[0] == 'ai' and kind is None:
+                tray.notify(f"{row['display_name']} が解放されました", 'Device Warden')
+        owners.clear()
+        owners.update(current)
 
     def sync_tray():
         """Reflect the most important device state in the tray icon."""
         try:
-            name = warden_icon.state_for(call('list', include_hidden=False))
+            rows = call('list', include_hidden=False)
+            name = warden_icon.state_for(rows)
+            notify_changes(rows)
         except WardenError:
             name = 'recovery' if time.time() - started > 20 else 'starting'
         if name != state['name']:

@@ -67,6 +67,41 @@ try {
   await tool.execute({ action: "release", lease_id: "lease-session-two" }, { sessionID: "session-two" })
   assert.equal(timers.size, 0)
 
+  // A failed heartbeat must stop ADB and new claims in that session, but not
+  // affect another session. An explicit release is still possible.
+  for (const sessionID of ["failure", "healthy"]) {
+    await tool.execute({ action: "claim" }, { sessionID })
+  }
+  const [failureTimer] = timers.values()
+  const healthyFetch = globalThis.fetch
+  globalThis.fetch = async (url, options) => {
+    if (String(url).endsWith("/heartbeat")) throw new Error("connection refused")
+    return healthyFetch(url, options)
+  }
+  await failureTimer.callback()
+  await assert.rejects(tool.execute({ action: "adb", lease_id: "lease-failure", args: ["shell", "id"] },
+    { sessionID: "failure" }), /heartbeat失敗/)
+  await assert.rejects(tool.execute({ action: "claim" }, { sessionID: "failure" }), /heartbeat失敗/)
+  await tool.execute({ action: "list" }, { sessionID: "healthy" })
+  globalThis.fetch = healthyFetch
+  await tool.execute({ action: "release", lease_id: "lease-failure" }, { sessionID: "failure" })
+  await tool.execute({ action: "release", lease_id: "lease-healthy" }, { sessionID: "healthy" })
+  assert.equal(timers.size, 0)
+
+  for (const status of [401, 409]) {
+    const sessionID = `error-${status}`
+    await tool.execute({ action: "claim" }, { sessionID })
+    const [timer] = timers.values()
+    globalThis.fetch = async (url, options) => String(url).endsWith("/heartbeat")
+      ? { ok: false, status, json: async () => ({ error: "failed" }) }
+      : healthyFetch(url, options)
+    await timer.callback()
+    await assert.rejects(tool.execute({ action: "list" }, { sessionID }),
+      status === 401 ? /認証に失敗/ : /解放済みか要確認/)
+    globalThis.fetch = healthyFetch
+    await tool.execute({ action: "release", lease_id: `lease-${sessionID}` }, { sessionID })
+  }
+
   // Plugin unload clears any remaining timers.
   await tool.execute({ action: "claim" }, { sessionID: "session-three" })
   assert.equal(timers.size, 1)

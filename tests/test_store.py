@@ -2,6 +2,8 @@ import tempfile
 import unittest
 import json
 import os
+import sqlite3
+from contextlib import closing
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
@@ -42,8 +44,28 @@ class StoreTests(unittest.TestCase):
         row = self.store.list()[0]
         self.assertEqual(row['session_id'], 'session-one')
         self.assertEqual(row['lease_state'], 'recovery_required')
+        self.assertEqual(row['recovery_reason'], 'connection_lost')
+        self.assertIsNotNone(row['recovery_at'])
+        events = [entry for entry in self.store.audit() if entry['action'] == 'recovery_required']
+        self.assertEqual(len(events), 1)
+        self.assertEqual(json.loads(events[0]['owner'])['reason'], 'connection_lost')
+        self.store.discover(EMPTY)
+        self.assertEqual(len([entry for entry in self.store.audit() if entry['action'] == 'recovery_required']), 1)
         with self.assertRaises(WardenError):
             self.store.claim('ai', tool='Codex')
+
+    def test_unleased_labels_do_not_assert_physical_availability(self):
+        row = self.store.list()[0]
+        self.assertEqual(status(row), '管理内では未確保')
+        for connection, expected in (
+            ('disconnected', '管理内では未確保（ADB未接続）'),
+            ('unauthorized', '管理内では未確保（ADB要確認）'),
+            ('unknown', '管理内では未確保（ADB要確認）'),
+        ):
+            self.assertEqual(status({**row, 'connection': connection}), expected)
+        self.assertEqual(status({**row, 'kind': 'human'}), '自分が使用中')
+        self.assertEqual(status({**row, 'kind': 'ai'}), 'AI使用中')
+        self.assertEqual(status({**row, 'ai_allowed': 0}), '管理内では未確保')
 
     def test_policy_and_ownership(self):
         self.store.update_device(self.device, ai_allowed=0)
@@ -56,11 +78,29 @@ class StoreTests(unittest.TestCase):
         self.assertIsNone(self.store.list()[0]['kind'])
 
     def test_restart_and_timeout_never_free(self):
-        self.store.claim('ai', tool='Codex')
+        lease = self.store.claim('ai', tool='Codex')
         self.store.recover_stale(seconds=-1)
         self.assertEqual(self.store.list()[0]['lease_state'], 'recovery_required')
+        self.assertEqual(self.store.list()[0]['recovery_reason'], 'heartbeat_timeout')
+        with self.assertRaises(WardenError):
+            self.store.heartbeat(lease['lease_id'])
         self.store.recover_restart()
         self.assertEqual(self.store.list()[0]['connection'], 'unknown')
+
+    def test_legacy_lease_schema_is_migrated_without_losing_data(self):
+        path = Path(self.temp.name) / 'legacy.db'
+        with closing(sqlite3.connect(path)) as db:
+            db.execute('''CREATE TABLE leases (id TEXT PRIMARY KEY, device_id TEXT NOT NULL,
+                kind TEXT NOT NULL, tool TEXT, session_id TEXT, project TEXT, title TEXT,
+                workdir TEXT, pid INTEGER, acquired_at REAL NOT NULL, heartbeat_at REAL NOT NULL,
+                state TEXT NOT NULL)''')
+            db.execute("INSERT INTO leases VALUES ('old','device','ai','Codex',NULL,NULL,NULL,NULL,NULL,1,2,'recovery_required')")
+            db.commit()
+        migrated = Store(path)
+        with migrated.connect() as db:
+            row = db.execute("SELECT * FROM leases WHERE id='old'").fetchone()
+            self.assertEqual(row['state'], 'recovery_required')
+            self.assertIsNone(row['recovery_reason'])
 
     def test_adb_error_and_unauthorized(self):
         with self.assertRaises(WardenError):
@@ -109,6 +149,40 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(rows[0]['device'], 'Phone')
         owner = json.loads(rows[0]['owner'])
         self.assertEqual((owner['tool'], owner['session_id']), ('Codex', 'session-one'))
+        self.assertEqual([row['action'] for row in self.store.audit(device_id='missing')], [])
+
+    def test_reconfirm_never_frees_a_lease_and_logs_it(self):
+        lease = self.store.claim('ai', tool='Codex')
+        with patch.object(self.store, 'discover', side_effect=lambda output=None: Store.discover(self.store, DEVICES)):
+            before = self.store.reconfirm(self.device)
+        self.assertEqual(before['lease_state'], 'active')
+        with patch.object(self.store, 'discover', side_effect=lambda output=None: Store.discover(self.store, EMPTY)):
+            after = self.store.reconfirm(self.device)
+        self.assertEqual(after['lease_state'], 'recovery_required')
+        self.assertEqual(after['recovery_reason'], 'connection_lost')
+        self.assertEqual(after['lease_id'], lease['lease_id'])
+        self.assertIn('reconfirm', [row['action'] for row in self.store.audit()])
+        with self.assertRaises(WardenError):
+            self.store.reconfirm('missing')
+
+    def test_scrcpy_requires_a_human_lease_on_a_connected_device(self):
+        with self.assertRaises(WardenError):
+            self.store.launch_scrcpy(self.device)
+        self.store.claim('ai', tool='Codex')
+        with self.assertRaises(WardenError):
+            self.store.launch_scrcpy(self.device)
+        self.store.release(device_id=self.device, force=True)
+        self.store.claim('human', device_id=self.device)
+        with patch('device_warden.store.subprocess.Popen') as popen:
+            self.assertTrue(self.store.launch_scrcpy(self.device)['started'])
+            self.assertEqual(popen.call_args.args[0], ['scrcpy', '-s', 'serial-one'])
+        self.assertIn('scrcpy', [row['action'] for row in self.store.audit()])
+
+    def test_scrcpy_missing_binary_is_reported(self):
+        self.store.claim('human', device_id=self.device)
+        with patch('device_warden.store.subprocess.Popen', side_effect=OSError('missing')):
+            with self.assertRaises(WardenError):
+                self.store.launch_scrcpy(self.device)
 
     def test_data_dir_is_shared_across_runtimes(self):
         with patch.dict(os.environ, {'USERPROFILE': r'C:\Users\example'}, clear=False):

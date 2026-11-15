@@ -41,6 +41,7 @@ def make_handler(store, token):
                 actions = {'list': store.list, 'refresh': store.discover, 'claim': store.claim,
                            'heartbeat': store.heartbeat, 'release': store.release, 'adb': store.adb,
                            'audit': store.audit,
+                           'reconfirm': store.reconfirm, 'scrcpy': store.launch_scrcpy,
                            'update': store.update_device, 'delete': store.delete_device,
                            'default-policy': store.default_policy}
                 action = self.path.strip('/')

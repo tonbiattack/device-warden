@@ -1,0 +1,74 @@
+name: Windows release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: テスト
+        shell: pwsh
+        run: |
+          python -m pip install -e .
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m unittest discover -s tests -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node integrations/opencode/test.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Windows版をビルド
+        shell: pwsh
+        run: |
+          ./scripts/build-exe.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Test-Path dist/DeviceWarden.exe)) { throw "実行ファイルが生成されませんでした" }
+      - name: 起動スモークテスト
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath (Resolve-Path dist/DeviceWarden.exe) -PassThru
+          Start-Sleep -Seconds 12
+          $p.Refresh()
+          if ($p.HasExited) { throw "起動直後に終了しました: $($p.ExitCode)" }
+          # Windows CI is disposable. Stop only the processes created by this build.
+          Get-CimInstance Win32_Process -Filter "Name='DeviceWarden.exe'" |
+            Where-Object { $_.ExecutablePath -eq (Resolve-Path dist/DeviceWarden.exe).Path } |
+            ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+          $hash = (Get-FileHash dist/DeviceWarden.exe -Algorithm SHA256).Hash.ToLower()
+          "$hash  DeviceWarden.exe" | Set-Content -Encoding ascii dist/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DeviceWarden-windows
+          path: |
+            dist/DeviceWarden.exe
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: DeviceWarden-windows
+          path: artifacts
+      - name: GitHub Releaseを作成
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: gh release create "$TAG" artifacts/DeviceWarden.exe artifacts/SHA256SUMS.txt --generate-notes --verify-tag

@@ -79,6 +79,10 @@ class Store:
             for column in ('brand', 'market_name'):
                 if column not in columns:
                     db.execute(f'ALTER TABLE devices ADD COLUMN {column} TEXT')
+            lease_columns = {row['name'] for row in db.execute('PRAGMA table_info(leases)')}
+            for column, kind in (('recovery_reason', 'TEXT'), ('recovery_at', 'REAL')):
+                if column not in lease_columns:
+                    db.execute(f'ALTER TABLE leases ADD COLUMN {column} {kind}')
 
     def connect(self):
         db = sqlite3.connect(self.path, timeout=15, isolation_level=None, factory=ClosingConnection)
@@ -126,8 +130,8 @@ class Store:
                 row = db.execute('SELECT id, brand, market_name FROM devices WHERE serial=?', (serial,)).fetchone()
                 if state == 'connected' and (not row['brand'] or was_connected is None or was_connected['connection'] != 'connected'):
                     self._identify(db, row['id'], serial, model, product)
-            db.execute("""UPDATE leases SET state='recovery_required' WHERE state='active'
-              AND device_id IN (SELECT id FROM devices WHERE connection != 'connected')""")
+            self._mark_recovery(db, "device_id IN (SELECT id FROM devices WHERE connection != 'connected')",
+                                (), 'connection_lost', now)
             db.commit()
 
     def _identify(self, db, device_id, serial, model, product):
@@ -154,18 +158,33 @@ class Store:
         with self.connect() as db:
             db.execute('BEGIN IMMEDIATE')
             db.execute("UPDATE devices SET connection='unknown'")
-            db.execute("UPDATE leases SET state='recovery_required' WHERE state='active'")
+            self._mark_recovery(db, '1=1', (), 'adb_unavailable', time.time())
             db.commit()
 
     def recover_restart(self):
         with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
             db.execute("UPDATE devices SET connection='unknown'")
-            db.execute("UPDATE leases SET state='recovery_required' WHERE state='active'")
+            self._mark_recovery(db, '1=1', (), 'broker_restart', time.time())
+            db.commit()
+
+    @staticmethod
+    def _mark_recovery(db, predicate, params, reason, now):
+        # All predicates are internal constants; caller holds a write transaction.
+        rows = db.execute("SELECT id, device_id, kind, tool, session_id FROM leases "
+                          "WHERE state='active' AND " + predicate, params).fetchall()
+        for row in rows:
+            owner = json.dumps({'kind': row['kind'], 'tool': row['tool'],
+                                'session_id': row['session_id'], 'reason': reason}, ensure_ascii=False)
+            db.execute('INSERT INTO audit VALUES(?,?,?,?)', (now, 'recovery_required', row['device_id'], owner))
+            db.execute("UPDATE leases SET state='recovery_required', recovery_reason=?, recovery_at=? WHERE id=?",
+                       (reason, now, row['id']))
 
     def list(self, include_hidden=False):
         with self.connect() as db:
             rows = db.execute('''SELECT d.*, l.id AS lease_id, l.kind, l.tool, l.session_id,
-                l.title, l.project, l.workdir, l.acquired_at, l.heartbeat_at, l.state AS lease_state
+                l.title, l.project, l.workdir, l.acquired_at, l.heartbeat_at, l.state AS lease_state,
+                l.recovery_reason, l.recovery_at
                 FROM devices d LEFT JOIN leases l ON l.device_id=d.id
                 AND l.state IN ('active','recovery_required') WHERE (? OR d.hidden=0)
                 ORDER BY COALESCE(d.alias,d.market_name,d.brand || ' ' || d.model,d.model,d.serial)''', (include_hidden,)).fetchall()
@@ -191,7 +210,8 @@ class Store:
             if not device:
                 raise WardenError('条件に合う空き端末がありません。接続、AI許可、確保状態を確認してください。')
             lease_id, now = secrets.token_urlsafe(32), time.time()
-            db.execute('INSERT INTO leases VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
+            db.execute('''INSERT INTO leases(id, device_id, kind, tool, session_id, project, title, workdir,
+                       pid, acquired_at, heartbeat_at, state) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)''',
                        (lease_id, device['id'], kind, tool, session_id, project, title, workdir, pid, now, now, 'active'))
             owner = json.dumps({'kind': kind, 'tool': tool, 'session_id': session_id}, ensure_ascii=False)
             db.execute('INSERT INTO audit VALUES(?,?,?,?)', (now, 'claim', device['id'], owner))
@@ -200,9 +220,9 @@ class Store:
 
     def heartbeat(self, lease_id):
         with self.connect() as db:
-            cur = db.execute("UPDATE leases SET heartbeat_at=? WHERE id=? AND state IN ('active','recovery_required')", (time.time(), lease_id))
+            cur = db.execute("UPDATE leases SET heartbeat_at=? WHERE id=? AND state='active'", (time.time(), lease_id))
             if not cur.rowcount:
-                raise WardenError('リースが見つかりません。')
+                raise WardenError('有効なリースが見つかりません。解放済みか、要確認状態です。')
 
     def adb(self, lease_id, args):
         if not isinstance(args, list) or not args or any(not isinstance(x, str) for x in args):
@@ -234,6 +254,46 @@ class Store:
             db.execute('INSERT INTO audit VALUES(?,?,?,?)', (time.time(), 'force_release' if force else 'release', row['device_id'], owner))
             db.commit()
 
+    def reconfirm(self, device_id):
+        """Re-check one device without ever freeing its lease automatically."""
+        with self.connect() as db:
+            row = db.execute('SELECT serial FROM devices WHERE id=?', (device_id,)).fetchone()
+        if not row:
+            raise WardenError('端末が見つかりません。')
+        self.discover()
+        with self.connect() as db:
+            row = db.execute('''SELECT d.connection, d.serial, l.id AS lease_id, l.state,
+                  l.recovery_reason FROM devices d LEFT JOIN leases l ON l.device_id=d.id
+                  AND l.state IN ('active','recovery_required') WHERE d.id=?''', (device_id,)).fetchone()
+            if not row:
+                raise WardenError('端末が見つかりません。')
+            if row['lease_id']:
+                db.execute('INSERT INTO audit VALUES(?,?,?,?)',
+                           (time.time(), 'reconfirm', device_id,
+                            json.dumps({'lease_id': row['lease_id'], 'state': row['state']}, ensure_ascii=False)))
+                db.commit()
+        return {'connection': row['connection'], 'lease_state': row['state'],
+                'recovery_reason': row['recovery_reason'], 'lease_id': row['lease_id']}
+
+    def launch_scrcpy(self, device_id):
+        """Start scrcpy only for a connected device the caller already holds."""
+        with self.connect() as db:
+            row = db.execute('''SELECT d.serial, l.kind FROM devices d JOIN leases l ON l.device_id=d.id
+              WHERE d.id=? AND l.state='active' AND d.connection='connected' ''', (device_id,)).fetchone()
+        if not row:
+            raise WardenError('接続中の端末を自分で確保してから起動してください。')
+        if row['kind'] != 'human':
+            raise WardenError('scrcpyは人間が確保した端末でのみ起動できます。')
+        try:
+            subprocess.Popen(['scrcpy', '-s', row['serial']], creationflags=HIDDEN)
+        except OSError as exc:
+            raise WardenError('scrcpyが見つかりません。PATHを確認してください。') from exc
+        with self.connect() as db:
+            db.execute('INSERT INTO audit VALUES(?,?,?,?)',
+                       (time.time(), 'scrcpy', device_id, json.dumps({'kind': 'human'}, ensure_ascii=False)))
+            db.commit()
+        return {'started': True}
+
     def update_device(self, device_id, **changes):
         allowed = {'alias', 'ai_allowed', 'hidden'}
         if not changes or not set(changes) <= allowed:
@@ -255,12 +315,17 @@ class Store:
 
     def recover_stale(self, seconds=120):
         with self.connect() as db:
-            db.execute("UPDATE leases SET state='recovery_required' WHERE kind='ai' AND state='active' AND heartbeat_at<?", (time.time()-seconds,))
+            db.execute('BEGIN IMMEDIATE')
+            now = time.time()
+            self._mark_recovery(db, "kind='ai' AND heartbeat_at<?", (now-seconds,), 'heartbeat_timeout', now)
+            db.commit()
 
-    def audit(self, limit=100):
+    def audit(self, limit=100, device_id=None):
         with self.connect() as db:
             rows = db.execute('''SELECT a.at, a.action, COALESCE(d.alias, d.model, d.serial) AS device, a.owner
-                FROM audit a LEFT JOIN devices d ON d.id=a.device_id ORDER BY a.at DESC LIMIT ?''', (limit,)).fetchall()
+                FROM audit a LEFT JOIN devices d ON d.id=a.device_id
+                WHERE (? IS NULL OR a.device_id=?) ORDER BY a.at DESC LIMIT ?''',
+                (device_id, device_id, limit)).fetchall()
             return [dict(row) for row in rows]
 
     def default_policy(self, allowed):
