@@ -2,6 +2,7 @@ import hmac
 import json
 import os
 import secrets
+import subprocess
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -17,6 +18,30 @@ def data_dir():
     # AppData may be redirected for packaged Python installs, so keep data in the
     # unredirected user profile where other runtimes (the OpenCode plugin) can find it.
     return Path(os.environ.get('USERPROFILE') or Path.home()) / '.device-warden'
+
+
+def ensure_private_dir(folder):
+    """Create the data folder and, when it is new, restrict it to the current user.
+
+    Inherited permissions can be far broader than expected (a shared folder or a
+    sandboxed TEMP directory), so a newly created store gets an explicit DACL.
+    Existing folders are left untouched: rewriting their ACL could break a user's
+    backups or deliberate sharing.
+    """
+    folder = Path(folder)
+    created = not folder.exists()
+    folder.mkdir(parents=True, exist_ok=True)
+    if created and os.name == 'nt':
+        try:
+            user = os.environ.get('USERNAME', '')
+            subprocess.run(['icacls', str(folder), '/inheritance:r',
+                            '/grant:r', f'{user}:(OI)(CI)F', 'SYSTEM:(OI)(CI)F',
+                            'Administrators:(OI)(CI)F'],
+                           capture_output=True, timeout=15,
+                           creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return folder
 
 
 def token_file():
@@ -73,8 +98,7 @@ class BrokerServer(ThreadingHTTPServer):
 
 
 def main():
-    folder = data_dir()
-    folder.mkdir(parents=True, exist_ok=True)
+    folder = ensure_private_dir(data_dir())
     store = Store(folder / 'warden.db')
     # Reserve the port before replacing the token: a second broker cannot invalidate the first.
     token = secrets.token_urlsafe(32)

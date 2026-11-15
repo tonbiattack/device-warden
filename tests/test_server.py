@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import threading
 import unittest
@@ -6,7 +7,8 @@ import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
 from pathlib import Path
-from device_warden.server import BrokerServer, make_handler
+from unittest.mock import patch
+from device_warden.server import BrokerServer, ensure_private_dir, make_handler
 from device_warden.store import Store
 
 
@@ -56,6 +58,28 @@ class ServerTests(unittest.TestCase):
         rows = self.post('audit', {})
         self.assertEqual([row['action'] for row in rows], ['release', 'claim'])
         self.assertEqual(json.loads(rows[0]['owner'])['session_id'], 'ses-a')
+        self.assertEqual([row['action'] for row in self.post('audit', {'device_id': 'missing'})], [])
+
+    def test_new_data_folder_gets_private_acl(self):
+        with tempfile.TemporaryDirectory() as parent:
+            folder = Path(parent) / 'new'
+            with patch('device_warden.server.subprocess.run') as run:
+                ensure_private_dir(folder)
+            self.assertTrue(folder.exists())
+            args = run.call_args.args[0]
+            self.assertEqual(args[:3], ['icacls', str(folder), '/inheritance:r'])
+            self.assertIn('SYSTEM:(OI)(CI)F', args)
+
+    def test_existing_data_folder_acl_is_left_alone(self):
+        with tempfile.TemporaryDirectory() as folder:
+            with patch('device_warden.server.subprocess.run') as run:
+                ensure_private_dir(folder)
+            run.assert_not_called()
+
+    def test_acl_failure_does_not_stop_the_broker(self):
+        with tempfile.TemporaryDirectory() as parent:
+            with patch('device_warden.server.subprocess.run', side_effect=OSError('denied')):
+                self.assertTrue(ensure_private_dir(Path(parent) / 'new').exists())
 
 
 if __name__ == '__main__':
