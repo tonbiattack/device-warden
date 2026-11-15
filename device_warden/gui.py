@@ -245,6 +245,14 @@ def main():
     state = {'name': 'starting'}
     owners = {}
 
+    def notify(title):
+        # Notifications are best-effort; a tray backend without support must not
+        # break the refresh loop.
+        try:
+            tray.notify(title, 'Device Warden')
+        except (NotImplementedError, OSError):
+            pass
+
     def notify_changes(rows):
         """Notify on lease changes only; never on every refresh."""
         current = {row['id']: (row['kind'], row['tool']) for row in rows}
@@ -257,9 +265,9 @@ def main():
                 continue
             row = next(item for item in rows if item['id'] == device_id)
             if kind == 'ai':
-                tray.notify(f"{row['display_name']} を {tool or 'AI'} が確保しました", 'Device Warden')
+                notify(f"{row['display_name']} を {tool or 'AI'} が確保しました")
             elif before[0] == 'ai' and kind is None:
-                tray.notify(f"{row['display_name']} が解放されました", 'Device Warden')
+                notify(f"{row['display_name']} が解放されました")
         owners.clear()
         owners.update(current)
 
