@@ -92,8 +92,27 @@ class App:
         self.apps_devices = []
         self.load()
         self.refresh_apps()
+        root.bind_all('<Control-Tab>', self.next_tab)
+        root.bind_all('<Control-Shift-Tab>', self.previous_tab)
         self.tick()
-        self.tick()
+
+    def next_tab(self, event=None):
+        """Ctrl+Tab cycles through the tabs; Ctrl+Shift+Tab goes backwards."""
+        self._switch_tab(1)
+        return 'break'
+
+    def previous_tab(self, event=None):
+        self._switch_tab(-1)
+        return 'break'
+
+    def _switch_tab(self, step):
+        count = len(self.notebook.tabs())
+        if count < 2:
+            return
+        current = self.notebook.index('current')
+        self.notebook.select((current + step) % count)
+        if self.notebook.index('current') == 1:
+            self.refresh_apps()
 
     def tick(self):
         self.load()
