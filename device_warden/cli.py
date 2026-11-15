@@ -5,6 +5,35 @@ from .client import call
 from .store import WardenError
 
 
+def apps_command(parser, args):
+    """Handle `device-warden apps ...`; scanning and installing stay separate."""
+    action = args.pop('apps_command')
+    if action == 'list':
+        result = call('apps-list')
+    elif action == 'track':
+        result = call('apps-track', **args)
+    elif action == 'untrack':
+        result = call('apps-untrack', **args)
+    elif action == 'scan':
+        result = call('apps-scan')
+    elif action == 'matrix':
+        result = call('apps-matrix')
+    else:
+        if not args.pop('yes'):
+            # Show what would happen and stop: writing to a device needs an explicit go-ahead.
+            matrix = call('apps-matrix')
+            print(json.dumps({'apk': args['apk'], 'devices': [
+                {'id': device['id'], 'name': device['display_name'],
+                 'connection': device['connection']}
+                for device in matrix['devices']]}, ensure_ascii=False, indent=2))
+            print('実際にインストールするには --yes を付けてください。', file=sys.stderr)
+            return 2
+        args['acknowledge'] = True
+        result = call('apps-install', **args)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(prog='device-warden')
     sub = parser.add_subparsers(dest='command', required=True)
@@ -29,6 +58,20 @@ def main():
     scoped.add_argument('--tool', required=True)
     scoped.add_argument('--session-id')
     scoped.add_argument('args', nargs=argparse.REMAINDER)
+    apps = sub.add_parser('apps', help='端末ごとのアプリ・バージョン管理')
+    apps_sub = apps.add_subparsers(dest='apps_command', required=True)
+    apps_sub.add_parser('list')
+    apps_sub.add_parser('scan')
+    apps_sub.add_parser('matrix')
+    track = apps_sub.add_parser('track')
+    track.add_argument('package')
+    track.add_argument('--label')
+    untrack = apps_sub.add_parser('untrack')
+    untrack.add_argument('package')
+    install = apps_sub.add_parser('install')
+    install.add_argument('apk')
+    install.add_argument('--device', dest='device_ids', action='append')
+    install.add_argument('--yes', action='store_true', help='インストールを実行する')
     args = vars(parser.parse_args())
     command = args.pop('command')
     try:
@@ -57,6 +100,8 @@ def main():
                 print('操作が中断されたためリースを保持しました。状況を確認してください。', file=sys.stderr)
                 print(json.dumps({'lease_id': lease_id}, ensure_ascii=False), file=sys.stderr)
                 return 1
+        if command == 'apps':
+            return apps_command(parser, args)
         result = call('list' if command == 'status' else command, **args)
         print(json.dumps(result, ensure_ascii=False, indent=2))
     except WardenError as exc:

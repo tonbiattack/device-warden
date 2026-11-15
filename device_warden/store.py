@@ -7,6 +7,8 @@ import time
 import uuid
 from pathlib import Path
 
+from .apps import package_details, user_packages, version_status
+
 # The Broker runs without a console, but adb.exe is a console program and would
 # otherwise flash a new window every time it is invoked.
 HIDDEN = getattr(subprocess, 'CREATE_NO_WINDOW', 0) if os.name == 'nt' else 0
@@ -49,6 +51,28 @@ def scrub_audit_owner(owner):
     if 'lease' in data and data['lease'] and '…' not in str(data['lease']):
         data['lease'] = redact_lease(str(data['lease']))
     return json.dumps(data, ensure_ascii=False)
+
+
+def install_hint(output):
+    """Translate common `adb install` failures into an actionable next step.
+
+    MIUI/HyperOS often reports USER_RESTRICTED even when the usual settings are
+    correct; pushing the APK lets the owner accept the install on the device
+    instead of the tool trying to bypass the vendor's approval dialog.
+    """
+    text = output or ''
+    if 'INSTALL_FAILED_USER_RESTRICTED' in text:
+        return ('端末側でインストールが承認されませんでした。APKを /sdcard/Download へ push し、'
+                '端末のファイルアプリから開いてインストールしてください。')
+    if 'INSTALL_FAILED_UPDATE_INCOMPATIBLE' in text or 'signatures do not match' in text:
+        return '署名が一致しないため更新できません。既存アプリと同じ鍵で署名したAPKを使用してください。'
+    if 'INSTALL_FAILED_VERSION_DOWNGRADE' in text:
+        return 'ダウングレードは拒否されました。versionCodeを上げたAPKを使用してください。'
+    if 'INSTALL_FAILED_INSUFFICIENT_STORAGE' in text:
+        return '端末の空き容量が不足しています。'
+    if 'device offline' in text or 'device not found' in text:
+        return '端末が接続されていません。接続を確認して再取得してください。'
+    return None
 
 
 def display_name(device):
@@ -101,6 +125,13 @@ class Store:
             CREATE TABLE IF NOT EXISTS audit (at REAL NOT NULL, action TEXT NOT NULL,
               device_id TEXT NOT NULL, owner TEXT);
             CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS tracked_apps (
+              package TEXT PRIMARY KEY, label TEXT, added_at REAL NOT NULL);
+            CREATE TABLE IF NOT EXISTS app_snapshots (
+              device_id TEXT NOT NULL REFERENCES devices(id), package TEXT NOT NULL,
+              version_name TEXT, version_code INTEGER, first_install_time TEXT,
+              last_update_time TEXT, scanned_at REAL NOT NULL, error TEXT,
+              PRIMARY KEY (device_id, package));
             """)
             # Older databases predate the friendly-name columns.
             columns = {row['name'] for row in db.execute('PRAGMA table_info(devices)')}
@@ -400,3 +431,182 @@ class Store:
     def default_policy(self, allowed):
         with self.connect() as db:
             db.execute("INSERT OR REPLACE INTO settings VALUES('default_ai_allowed',?)", ('1' if allowed else '0',))
+
+    # --- Tracked applications -------------------------------------------------
+    #
+    # Only explicitly registered packages are collected. Scanning every installed
+    # app would put unrelated personal app names into the database for no reason.
+
+    def track_app(self, package, label=None):
+        if not package or not package.replace('.', '').replace('_', '').isalnum():
+            raise WardenError('パッケージ名が不正です。')
+        with self.connect() as db:
+            db.execute('INSERT INTO tracked_apps(package, label, added_at) VALUES(?,?,?) '
+                       'ON CONFLICT(package) DO UPDATE SET label=COALESCE(excluded.label, tracked_apps.label)',
+                       (package, label, time.time()))
+
+    def untrack_app(self, package):
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            cur = db.execute('DELETE FROM tracked_apps WHERE package=?', (package,))
+            if not cur.rowcount:
+                raise WardenError('対象アプリが見つかりません。')
+            db.execute('DELETE FROM app_snapshots WHERE package=?', (package,))
+            db.commit()
+
+    def tracked_apps(self):
+        with self.connect() as db:
+            return [dict(row) for row in db.execute(
+                'SELECT package, label, added_at FROM tracked_apps ORDER BY package')]
+
+    def scan_apps(self, device_id=None):
+        """Collect versions of tracked apps per connected device.
+
+        Each device is scanned independently: one offline or slow device records
+        its own error and never blocks the rest. Disconnected devices keep their
+        previous snapshot so the UI can show a last-known value with its time.
+        """
+        with self.connect() as db:
+            packages = [row['package'] for row in db.execute('SELECT package FROM tracked_apps')]
+            query = "SELECT id, serial, connection FROM devices WHERE hidden=0"
+            params = ()
+            if device_id is not None:
+                query += " AND id=?"
+                params = (device_id,)
+            devices = [dict(row) for row in db.execute(query, params)]
+        if not packages:
+            return {'scanned': [], 'skipped': [d['id'] for d in devices]}
+        scanned, skipped = [], []
+        for device in devices:
+            if device['connection'] != 'connected':
+                skipped.append(device['id'])
+                continue
+            self._scan_device(device, packages)
+            scanned.append(device['id'])
+        return {'scanned': scanned, 'skipped': skipped}
+
+    def _scan_device(self, device, packages):
+        now = time.time()
+        rows = []
+        try:
+            listed = run_adb(['adb', '-s', device['serial'], 'shell', 'pm', 'list', 'packages', '-3'],
+                             timeout=30)
+            if listed.returncode != 0:
+                raise WardenError(listed.stderr.strip() or 'アプリ一覧の取得に失敗しました。')
+            installed = set(user_packages(listed.stdout))
+        except (OSError, subprocess.SubprocessError, WardenError) as exc:
+            reason = str(exc) or 'ADBの実行に失敗しました。'
+            with self.connect() as db:
+                db.execute('BEGIN IMMEDIATE')
+                for package in packages:
+                    db.execute('INSERT INTO app_snapshots VALUES(?,?,?,?,?,?,?,?) '
+                               'ON CONFLICT(device_id,package) DO UPDATE SET scanned_at=excluded.scanned_at, error=excluded.error',
+                               (device['id'], package, None, None, None, None, now, reason))
+                db.commit()
+            return
+        for package in packages:
+            if package not in installed:
+                rows.append((device['id'], package, None, None, None, None, now, None))
+                continue
+            try:
+                detail = run_adb(['adb', '-s', device['serial'], 'shell', 'dumpsys', 'package', package],
+                                 timeout=30)
+                info = package_details(detail.stdout) if detail.returncode == 0 else {}
+                error = None if detail.returncode == 0 else 'バージョン情報の取得に失敗しました。'
+            except (OSError, subprocess.SubprocessError):
+                info, error = {}, 'バージョン情報の取得に失敗しました。'
+            rows.append((device['id'], package, info.get('version_name'), info.get('version_code'),
+                         info.get('first_install_time'), info.get('last_update_time'), now, error))
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            for row in rows:
+                db.execute('INSERT INTO app_snapshots VALUES(?,?,?,?,?,?,?,?) '
+                           'ON CONFLICT(device_id,package) DO UPDATE SET '
+                           'version_name=excluded.version_name, version_code=excluded.version_code, '
+                           'first_install_time=excluded.first_install_time, last_update_time=excluded.last_update_time, '
+                           'scanned_at=excluded.scanned_at, error=excluded.error', row)
+            db.commit()
+
+    def app_matrix(self):
+        """Rows are tracked apps, columns are devices, cells are version snapshots."""
+        with self.connect() as db:
+            devices = [dict(row) for row in db.execute(
+                '''SELECT id, serial, alias, model, brand, market_name, connection, last_seen
+                   FROM devices WHERE hidden=0 ORDER BY COALESCE(alias, market_name, model, serial)''')]
+            apps = [dict(row) for row in db.execute(
+                'SELECT package, label FROM tracked_apps ORDER BY label, package')]
+            snapshots = {(row['device_id'], row['package']): dict(row) for row in db.execute(
+                'SELECT * FROM app_snapshots')}
+        matrix = []
+        for app in apps:
+            cells = {}
+            codes = []
+            for device in devices:
+                snapshot = snapshots.get((device['id'], app['package']))
+                if snapshot:
+                    cells[device['id']] = snapshot
+                    if snapshot['version_code'] is not None:
+                        codes.append(snapshot['version_code'])
+                else:
+                    cells[device['id']] = None
+            baseline = max(codes) if codes else None
+            for snapshot in cells.values():
+                if snapshot:
+                    snapshot['status'] = version_status(snapshot['version_code'], baseline)
+            matrix.append({'package': app['package'], 'label': app['label'] or app['package'],
+                           'baseline': baseline, 'cells': cells})
+        return {'devices': [dict(device, display_name=display_name(device)) for device in devices],
+                'apps': matrix}
+
+    def install_apk(self, apk_path, device_ids=None, acknowledge=False):
+        """Install a local APK with `adb install -r` on the requested devices.
+
+        Installing writes to a device, so it is a separate operator action: the
+        caller must pass `acknowledge`, each target is addressed with an explicit
+        serial, and the result is reported per device.
+        """
+        if acknowledge is not True:
+            raise WardenError('APKのインストールには acknowledge が必要です。')
+        path = Path(apk_path)
+        if not path.is_file():
+            raise WardenError('APKファイルが見つかりません。')
+        with self.connect() as db:
+            query = "SELECT id, serial, connection FROM devices WHERE hidden=0"
+            params = ()
+            if device_ids:
+                if any(not isinstance(item, str) for item in device_ids):
+                    raise WardenError('端末IDが不正です。')
+                query += ' AND id IN (%s)' % ','.join('?' * len(device_ids))
+                params = tuple(device_ids)
+            devices = [dict(row) for row in db.execute(query, params)]
+        if device_ids and len(devices) != len(set(device_ids)):
+            raise WardenError('端末が見つかりません。')
+        results = []
+        for device in devices:
+            if device['connection'] != 'connected':
+                results.append({'device_id': device['id'], 'ok': False,
+                                'error': '端末が接続されていません。'})
+                continue
+            try:
+                run = run_adb(['adb', '-s', device['serial'], 'install', '-r', str(path)], timeout=300)
+                ok = run.returncode == 0 and 'Success' in run.stdout
+                output = (run.stdout or run.stderr).strip()[:2000]
+                result = {'device_id': device['id'], 'ok': ok, 'output': output}
+                if not ok:
+                    hint = install_hint(output)
+                    if hint:
+                        result['hint'] = hint
+                results.append(result)
+            except (OSError, subprocess.SubprocessError) as exc:
+                results.append({'device_id': device['id'], 'ok': False, 'error': str(exc)})
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            db.execute('INSERT INTO audit VALUES(?,?,?,?)',
+                       (time.time(), 'install_apk', results[0]['device_id'] if results else '',
+                        json.dumps({'file': path.name, 'results': [
+                            {'ok': result['ok']} for result in results]}, ensure_ascii=False)))
+            db.commit()
+        successful = [result['device_id'] for result in results if result['ok']]
+        if successful:
+            self.scan_apps()
+        return {'results': results, 'scanned': bool(successful)}

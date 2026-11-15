@@ -68,6 +68,9 @@ def make_handler(store, token):
                            'heartbeat': store.heartbeat, 'release': store.release, 'adb': store.adb,
                            'audit': store.audit,
                            'reconfirm': store.reconfirm, 'scrcpy': store.launch_scrcpy,
+                           'apps-list': store.tracked_apps, 'apps-track': store.track_app,
+                           'apps-untrack': store.untrack_app, 'apps-scan': store.scan_apps,
+                           'apps-matrix': store.app_matrix, 'apps-install': store.install_apk,
                            'force-release': store.force_release,
                            'update': store.update_device, 'delete': store.delete_device,
                            'default-policy': store.default_policy}

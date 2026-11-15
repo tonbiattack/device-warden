@@ -69,10 +69,11 @@ class App:
             ttk.Button(bar, text=label, command=fn).pack(side='left')
         bar = ttk.Frame(root)
         bar.pack(fill='x', pady=5)
-        for label, fn in [('再確認', self.reconfirm), ('scrcpy', self.scrcpy), ('名前変更', self.rename), ('表示切替', self.toggle_hidden), ('削除', self.delete), ('新規端末のAI既定', self.default_policy), ('履歴', self.audit), ('自動起動', self.autostart)]:
+        for label, fn in [('再確認', self.reconfirm), ('scrcpy', self.scrcpy), ('名前変更', self.rename), ('表示切替', self.toggle_hidden), ('削除', self.delete), ('新規端末のAI既定', self.default_policy), ('履歴', self.audit), ('自動起動', self.autostart), ('アプリ', self.open_apps)]:
             ttk.Button(bar, text=label, command=fn).pack(side='left')
         ttk.Checkbutton(root, text='非表示端末も表示', variable=self.hidden, command=self.load).pack()
         root.protocol('WM_DELETE_WINDOW', root.withdraw)
+        self.apps_window = None
         self.load()
         self.tick()
 
@@ -147,6 +148,94 @@ class App:
         if d and d['kind'] and messagebox.askyesno('強制解放', '作業中のAIや利用者の操作を中断し、競合を引き起こす可能性があります。強制解放しますか？'):
             self.run('force-release', acknowledge=True, device_id=d['id'])
             self.load()
+
+    def open_apps(self):
+        """Open the app/version matrix in its own window.
+
+        The matrix is wider than the device list, and mixing it into the device
+        tree would make the availability view harder to scan.
+        """
+        if self.apps_window and tk.Toplevel.winfo_exists(self.apps_window):
+            self.apps_window.lift()
+            return
+        window = tk.Toplevel(self.root)
+        window.title('Device Warden — アプリ')
+        window.geometry('980x520')
+        self.apps_window = window
+        frame = ttk.Frame(window)
+        frame.pack(fill='both', expand=True, padx=8, pady=6)
+        note = ttk.Label(window, text='接続中の端末のみ再取得します。未接続の端末は最後に取得した値を表示します。',
+                         foreground='#a03319')
+        note.pack(pady=2)
+        columns = ('app',)
+        tree = ttk.Treeview(frame, columns=columns, show='headings', height=14)
+        tree.heading('app', text='アプリ')
+        tree.column('app', width=240)
+        tree.pack(fill='both', expand=True, side='left')
+        bar = ttk.Frame(window)
+        bar.pack(fill='x', padx=8, pady=4)
+        ttk.Button(bar, text='再取得', command=lambda: self.scan_apps(tree)).pack(side='left')
+        ttk.Button(bar, text='対象アプリ追加', command=lambda: self.track_app(tree)).pack(side='left')
+        ttk.Button(bar, text='対象から削除', command=lambda: self.untrack_app(tree)).pack(side='left')
+        self.scan_apps(tree)
+
+    def scan_apps(self, tree):
+        self.run('apps-scan')
+        self.refresh_apps(tree)
+
+    def refresh_apps(self, tree):
+        matrix = self.run('apps-matrix')
+        if matrix is None:
+            return
+        devices = matrix['devices']
+        columns = ['app'] + [device['id'] for device in devices]
+        tree.configure(columns=columns, displaycolumns=columns)
+        tree.heading('app', text='アプリ')
+        tree.column('app', width=220, anchor='w')
+        for device in devices:
+            label = device['display_name']
+            if device['connection'] != 'connected':
+                label += '（未接続）'
+            tree.heading(device['id'], text=label)
+            tree.column(device['id'], width=150, anchor='center')
+        tree.delete(*tree.get_children())
+        for app in matrix['apps']:
+            values = [app['label']]
+            for device in devices:
+                cell = app['cells'].get(device['id'])
+                if cell is None:
+                    values.append('—')
+                elif cell.get('error'):
+                    values.append('取得失敗')
+                elif cell.get('version_code') is None and cell.get('version_name') is None:
+                    values.append('未インストール')
+                else:
+                    version = f"{cell.get('version_name') or '?'} ({cell.get('version_code') or '?'})"
+                    status = cell.get('status')
+                    if status == 'old':
+                        version += ' ↓'
+                    elif status == 'newer':
+                        version += ' ↑'
+                    values.append(version)
+            tree.insert('', 'end', iid=app['package'], values=values)
+        self.apps_devices = devices
+        if not matrix['apps']:
+            self.message.config(text='対象アプリが未登録です。「対象アプリ追加」からパッケージを登録してください。')
+
+    def track_app(self, tree):
+        package = simpledialog.askstring('対象アプリ', 'パッケージ名（例: com.example.app）', parent=tree)
+        if package:
+            label = simpledialog.askstring('対象アプリ', '表示名（任意）', parent=tree)
+            self.run('apps-track', package=package.strip(), label=(label or '').strip() or None)
+            self.scan_apps(tree)
+
+    def untrack_app(self, tree):
+        selected = tree.selection()
+        if not selected:
+            messagebox.showinfo('対象アプリ', '削除するアプリを選択してください。')
+            return
+        self.run('apps-untrack', package=selected[0])
+        self.refresh_apps(tree)
 
     def reconfirm(self):
         d = self.require_selection()

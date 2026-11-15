@@ -197,6 +197,36 @@ OpenCode の設定にある `plugins` へ、このプラグインのディレク
 
 Windowsの継承ACLや別ユーザーからのアクセスに関する注意は [ローカルデータと権限](docs/WINDOWS-SECURITY.md) を参照してください。
 
+## アプリとバージョンの管理
+
+端末ごとに、開発中アプリのインストール状況とバージョンを一覧できます。行がアプリ、列が端末で、セルには `versionName (versionCode)`、未インストール、未取得などが入ります。
+
+<p align="center">
+  <img src="docs/apps-screenshot.png" alt="アプリとバージョンのマトリクス" width="900">
+</p>
+
+- 取得対象は**明示的に登録したパッケージだけ**です。端末内の全アプリを既定で収集しません。
+- 比較は `versionName` の文字列ではなく **versionCode** で行い、最新より小さいセルには `↓` を付けます。
+- 接続中の端末だけ再取得し、未接続の端末は最後に取得した値を「未接続」と明示して表示します。
+- 1台の端末で失敗しても、他端末の取得は続行します。
+
+### CLI
+
+```powershell
+device-warden apps list
+device-warden apps track com.example.app --label "Example"
+device-warden apps scan
+device-warden apps matrix
+device-warden apps install app-debug.apk --device <device_id> --yes
+device-warden apps install app-debug.apk          # 対象端末を確認するだけ
+```
+
+`apps install` は `--yes` を付けるまで実行しません。付けない場合は対象端末と接続状態だけを表示します。インストールは端末ごとに `adb -s <serial> install -r` で実行し、成否と再取得したバージョンを報告します。`--device` を複数指定すると一括実行します。
+
+署名不一致・ダウングレード不可・容量不足・端末オフラインなどは、それぞれ対処方法を添えて表示します。MIUI/HyperOS の `INSTALL_FAILED_USER_RESTRICTED` は設定漏れが原因とは限らず、端末側の承認が必要です。自動操作で回避せず、APKを端末へ置いて画面からインストールするよう案内します。
+
+取得と更新は分離しており、インストールは明示操作でのみ実行します。アンインストールやデータ消去は対象外です。
+
 ## テスト
 
 ```powershell
@@ -204,7 +234,7 @@ python -m unittest discover -s tests -v
 node integrations/opencode/test.mjs        # Node.js 24 以上
 ```
 
-並列claim、ポリシー強制、切断・再接続時の所有者保持、heartbeat停止、ADB対象の固定、Broker認証、監査ログ、アイコンの状態優先度、自動起動の登録・解除を網羅しています。README用のスクリーンショットは `python scripts/capture-screenshot.py` で、架空の端末データから再生成できます。
+並列claim、ポリシー強制、切断・再接続時の所有者保持、heartbeat停止、ADB対象の固定、Broker認証、監査ログ、アイコンの状態優先度、自動起動の登録・解除、アプリ取得の端末別失敗分離とversionCode比較を網羅しています。README用のスクリーンショットは `python scripts/capture-screenshot.py` と `python scripts/capture-apps-screenshot.py` で、架空のデータから再生成できます。
 
 ## 制限
 
