@@ -57,8 +57,9 @@ try {
   // A heartbeat keeps the lease alive without an explicit tool call.
   const [firstTimer] = timers.values()
   assert.equal(firstTimer.delay, 30_000)
-  firstTimer.callback()
-  await new Promise((resolve) => setTimeout(resolve, 0))
+  // Await the callback: it reads the token file before fetching, so a single
+  // timer tick is not enough on a slow filesystem (this failed on Windows CI).
+  await firstTimer.callback()
   assert.ok(requests.some((r) => r.action === "heartbeat" && r.body.lease_id === "lease-session-one"))
 
   // Releasing one lease stops only that lease's heartbeat.
