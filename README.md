@@ -161,6 +161,42 @@ device-warden run --tool Codex --device <device_id> -- python scripts\ui-test.py
 
 返ってくる `lease_id` が所有権の証明です。秘密として扱い、作業中は120秒以内の間隔でheartbeatを送り、終わったらreleaseしてください。AIのリースIDは `list` の出力には含めません。
 
+## MCP サーバ（DSH・その他のMCPクライアント）
+
+`device-warden-mcp` は、Device Warden を MCP のツールとして公開する stdio サーバです。Broker の HTTP API を包み、**リースの保持と heartbeat をこのプロセスが担当**します。エージェントは `device_id` だけを扱えばよく、`lease_id` は外に出ません。
+
+```powershell
+device-warden-mcp        # 標準入出力でJSON-RPCを話す。通常はクライアントが起動する
+```
+
+| ツール | 用途 |
+| --- | --- |
+| `list` | 端末一覧（接続・確保者・AIポリシー・このセッションが保持中か） |
+| `claim` | 端末を確保。`device_id` を省略すると空き端末を自動選択 |
+| `release` | このセッションが確保した端末を解放 |
+| `adb` | 確保中の端末へADBを1回実行（対象シリアルはBrokerが固定） |
+| `status` | このセッションが保持中の端末と最終heartbeat時刻 |
+
+MCP Python SDK は uvicorn・starlette・pydantic を要求しますが、このサーバは stdio しか使わないため、JSON-RPC の小さな範囲を直接実装しています（追加依存なし）。
+
+### DSH への登録
+
+`~/.dsh/profiles/<profile>/cordis.patch.yml` に追記します。`command` は PATH ではなく絶対パスで指定してください。MCPクライアントは子プロセスの環境変数を scrub するため、PATH に頼ると起動に失敗します。
+
+```yaml
+- insert:
+    - id: mcp-device-warden
+      name: "@deepseek-ai/dsh-mcp-client"
+      config:
+        serverName: device-warden
+        transport: stdio
+        command: 'C:/Users/<user>/.../Scripts/device-warden-mcp.exe'
+        failOnStartupError: false
+        toolCallTimeoutMs: 120000
+```
+
+登録後は `mcp__device-warden__list` などのツールが生えます。設定の反映には DSH の再起動が必要です。
+
 ## OpenCode との連携
 
 OpenCode の設定にある `plugins` へ、このプラグインのディレクトリを追加します。
@@ -196,6 +232,7 @@ OpenCode の設定にある `plugins` へ、このプラグインのディレク
 - `device_warden/gui.py` — Tkinterの画面、トレイアイコン、状態色、前面化。
 - `device_warden/autostart.py` — スタートアップのショートカット、単一インスタンス、前面表示の通知。
 - `device_warden/icon.py` — アイコン描画（`assets/` のSVGが正本）。
+- `device_warden/mcp.py` — MCPのstdioサーバ。リース保持とheartbeatを内包する。
 - `integrations/opencode/` — OpenCode V2プラグインとそのテスト。
 
 リースは自分の `lease_id` か、明示的な強制解放でのみ解放されます。切断・Broker再起動・heartbeat停止では `recovery_required` へ移り、空きには戻しません。USBとWi-Fiのシリアルは意図的に別端末として扱い、再接続を別の個体と取り違えないようにしています。
@@ -209,6 +246,7 @@ OpenCode の設定にある `plugins` へ、このプラグインのディレク
 | 変数 | 既定値 | 用途 |
 | --- | --- | --- |
 | `DEVICE_WARDEN_HOME` | `%USERPROFILE%\.device-warden` | DB、Brokerトークン、生成したアイコン |
+| `DEVICE_WARDEN_PORT` | `47631` | Brokerの待受ポート。テストが一時ポートを使うためのもの |
 
 データを `%LOCALAPPDATA%` に置かないのは意図的です。パッケージ版のPythonではAppDataが仮想化され、BrokerトークンがOpenCodeプラグインから見えなくなるためです。このディレクトリには端末シリアルやローカルパスが入るので、共有せず、バージョン管理にも入れないでください（`.gitignore` で除外済み）。
 
@@ -251,7 +289,7 @@ python -m unittest discover -s tests -v
 node integrations/opencode/test.mjs        # Node.js 24 以上
 ```
 
-並列claim、ポリシー強制、切断・再接続時の所有者保持、heartbeat停止、ADB対象の固定、Broker認証、監査ログ、アイコンの状態優先度、自動起動の登録・解除、アプリ取得の端末別失敗分離とversionCode比較を網羅しています。README用のスクリーンショットは `python scripts/capture-screenshot.py` と `python scripts/capture-apps-screenshot.py` で、架空のデータから再生成できます。
+並列claim、ポリシー強制、切断・再接続時の所有者保持、heartbeat停止、ADB対象の固定、Broker認証、監査ログ、アイコンの状態優先度、自動起動の登録・解除、アプリ取得の端末別失敗分離とversionCode比較を網羅しています。`tests/test_broker_integration.py` は実際のBrokerを一時ポートで起動し、CLIをHTTP越しに動かします。CLIとBrokerの引数名の食い違いはモックでは見つからないためです。`tests/test_mcp.py` はMCPサーバのプロトコルとリース保持を検証します。README用のスクリーンショットは `python scripts/capture-screenshot.py` と `python scripts/capture-apps-screenshot.py` で、架空のデータから再生成できます。
 
 ## 制限
 

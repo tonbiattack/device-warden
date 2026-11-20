@@ -24,7 +24,7 @@ def apps_command(parser, args):
         if not args.pop('yes'):
             # Show what would happen and stop: writing to a device needs an explicit go-ahead.
             matrix = call('apps-matrix')
-            print(json.dumps({'apk': args['apk'], 'devices': [
+            print(json.dumps({'apk': args['apk_path'], 'devices': [
                 {'id': device['id'], 'name': device['display_name'],
                  'connection': device['connection']}
                 for device in matrix['devices']]}, ensure_ascii=False, indent=2))
@@ -153,7 +153,9 @@ def main():
     untrack = apps_sub.add_parser('untrack')
     untrack.add_argument('package')
     install = apps_sub.add_parser('install')
-    install.add_argument('apk')
+    # The Broker action takes `apk_path`; keep the CLI flag short but send the
+    # name the Store method actually accepts, so the two cannot drift apart.
+    install.add_argument('apk_path', metavar='apk')
     install.add_argument('--device', dest='device_ids', action='append')
     install.add_argument('--yes', action='store_true', help='インストールを実行する')
     args = vars(parser.parse_args())

@@ -108,8 +108,9 @@ def main():
     store = Store(folder / 'warden.db')
     # Reserve the port before replacing the token: a second broker cannot invalidate the first.
     token = secrets.token_urlsafe(32)
+    port = int(os.environ.get('DEVICE_WARDEN_PORT') or 47631)
     try:
-        server = BrokerServer(('127.0.0.1', 47631), make_handler(store, token))
+        server = BrokerServer(('127.0.0.1', port), make_handler(store, token))
     except OSError:
         print('Brokerは既に起動しています。二重起動はできません。', flush=True)
         return 1

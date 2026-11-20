@@ -16,6 +16,7 @@ device-warden = "device_warden.cli:main"
 device-warden-broker = "device_warden.server:main"
 device-warden-tray = "device_warden.tray:main"
 device-warden-autostart = "device_warden.autostart:main"
+device-warden-mcp = "device_warden.mcp:main"
 
 [tool.setuptools.packages.find]
 include = ["device_warden*"]
