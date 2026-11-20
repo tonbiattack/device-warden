@@ -139,11 +139,23 @@ device-warden recover <device_id> --acknowledge
 device-warden force-release <device_id> --acknowledge
 device-warden audit
 device-warden with-device --tool Codex -- shell getprop
+device-warden run --tool Codex -- .\gradlew.bat testDebugUnitTest
 ```
 
 セッションは自分のリースを `--device` と `--session-id` の組で解放できます。`list` はAIリースの `lease_id` を返しませんが、所有しているリースには `owns_lease: true` が付くため、中断後にIDを失っても自分の端末だけを解放できます。他セッションのリースは `自分のリースではありません` で拒否されます。`recover` は要確認のリースだけを対象とし、有効なリースには使えません（`force-release` と分離）。いずれも `--acknowledge` が必要で、監査ログに記録されます。`claim --resume --session-id ... --device ...` は、自分が中断した要確認リースを引き継ぎます。
 
 `with-device` は指定のADBサブコマンドを1回だけBroker経由で実行します。確保に失敗すればADBを実行せず、成功時のみ解放します。ADBの失敗や中断時は安全のためリースを保持し、標準エラーへリースIDを出力します。この出力は秘密として扱い、作業状況を確認してから解放してください。強制終了などでIDが表示されない場合はGUIで所有者を確認してください。任意の子プロセスやGradleの仲介は対象外です。
+
+`run` は任意のコマンドを1リースで囲みます。実行中は30秒ごとに自動でheartbeatを送るため、ビルドやテストのような数分かかる作業でもリースが要確認へ落ちません。コマンドが成功すれば解放し、失敗した場合はリースを保持して標準エラーへリースIDを出力します（失敗の原因を調べる間、他のセッションに端末を渡さないため）。起動できなかった場合は端末に触れていないので解放します。
+
+```powershell
+device-warden run --tool Codex -- .\gradlew.bat testDebugUnitTest
+device-warden run --tool Codex --device <device_id> -- python scripts\ui-test.py
+```
+
+端末を直接操作するADBは `run` ではなく `with-device` か `adb` を使ってください。`run` はBrokerを経由せずに子プロセスを起動するため、対象端末の固定は行われません。
+
+`claim` は対話的に長く保持する用途向けで、heartbeatは呼び出し側の責任です。120秒送らないとリースは要確認へ移り、その端末は次の `claim` で選ばれません。コマンドを実行するだけなら `run` か `with-device` を使ってください。
 
 仮想環境を有効化していない場合は、各コマンドの先頭に `.\.venv\Scripts\` を付けます。`--tool "Command Code"` のように任意のツール名を指定できます。
 

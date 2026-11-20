@@ -1,6 +1,8 @@
 import argparse
 import json
+import subprocess
 import sys
+import threading
 from .client import call
 from .store import WardenError
 
@@ -32,6 +34,71 @@ def apps_command(parser, args):
         result = call('apps-install', **args)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
+
+
+def keep_alive(lease_id, interval=30):
+    """Refresh a lease while a child process runs.
+
+    `claim` only records the lease; the Broker moves it to `recovery_required`
+    after 120s without a heartbeat, and a device in that state is not offered to
+    the next caller. A command that runs longer than that would therefore block
+    the device for everyone else, so the heartbeat has to follow the work.
+    """
+    stopped = threading.Event()
+
+    def loop():
+        while not stopped.wait(interval):
+            try:
+                call('heartbeat', lease_id=lease_id)
+            except WardenError:
+                # The lease is gone or the Broker is unreachable. Stop quietly:
+                # the child process is still the user's work, and the release
+                # attempt at the end reports the real problem.
+                return
+
+    thread = threading.Thread(target=loop, daemon=True)
+    thread.start()
+    return stopped, thread
+
+
+def run_command(args):
+    """Run a command while holding a lease, so long work stays inside one claim."""
+    command = args.pop('command_args')
+    if command and command[0] == '--':
+        command.pop(0)
+    if not command:
+        raise WardenError('実行するコマンドを指定してください。')
+    claim = call('claim', kind='ai', **args)
+    lease_id = claim['lease_id']
+    stopped, thread = keep_alive(lease_id)
+    try:
+        try:
+            completed = subprocess.run(command)
+        except OSError as exc:
+            # The command never started, so nothing touched the device. Free the
+            # lease instead of leaving it for the next caller to trip over.
+            stopped.set()
+            thread.join(timeout=5)
+            call('release', lease_id=lease_id)
+            raise WardenError(f'コマンドを実行できませんでした: {exc}') from exc
+        stopped.set()
+        thread.join(timeout=5)
+        if completed.returncode != 0:
+            # Keep the lease: a failed command usually means the operator needs
+            # to look at the device, and silently freeing it invites a second
+            # session to start on top of an unfinished investigation.
+            print('コマンドが失敗したためリースを保持しました。状況を確認してください。', file=sys.stderr)
+            print(json.dumps({'lease_id': lease_id, 'exit_code': completed.returncode},
+                             ensure_ascii=False), file=sys.stderr)
+            return completed.returncode if completed.returncode > 0 else 1
+        call('release', lease_id=lease_id)
+        print(json.dumps({'exit_code': 0, 'device_id': claim['device_id']}, ensure_ascii=False))
+        return 0
+    except KeyboardInterrupt:
+        stopped.set()
+        print('操作が中断されたためリースを保持しました。状況を確認してください。', file=sys.stderr)
+        print(json.dumps({'lease_id': lease_id}, ensure_ascii=False), file=sys.stderr)
+        return 1
 
 
 def main():
@@ -69,6 +136,12 @@ def main():
     scoped.add_argument('--tool', required=True)
     scoped.add_argument('--session-id')
     scoped.add_argument('args', nargs=argparse.REMAINDER)
+    runner = sub.add_parser('run', help='端末を確保し、コマンド実行中はheartbeatを送り続ける')
+    runner.add_argument('--device', dest='device_id')
+    runner.add_argument('--tool', required=True)
+    for option in ('session-id', 'title', 'project', 'workdir'):
+        runner.add_argument('--' + option)
+    runner.add_argument('command_args', nargs=argparse.REMAINDER)
     apps = sub.add_parser('apps', help='端末ごとのアプリ・バージョン管理')
     apps_sub = apps.add_subparsers(dest='apps_command', required=True)
     apps_sub.add_parser('list')
@@ -113,6 +186,8 @@ def main():
                 return 1
         if command == 'force-release':
             args['acknowledge'] = True
+        if command == 'run':
+            return run_command(args)
         if command == 'claim' and args.get('resume') and not args.get('session_id'):
             raise WardenError('--resume には --session-id が必要です。')
         if command == 'apps':
