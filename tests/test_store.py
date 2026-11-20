@@ -27,6 +27,15 @@ class StoreTests(unittest.TestCase):
         self.store.discover(DEVICES)
         self.device = self.store.list()[0]['id']
 
+    def test_list_reports_last_use_from_the_whole_history(self):
+        """A released lease must still count as "used"; only the active one is joined."""
+        self.assertIsNone(self.store.list()[0]['last_used_at'])
+        lease = self.store.claim('ai', tool='Codex')
+        self.store.release(lease_id=lease['lease_id'])
+        row = self.store.list()[0]
+        self.assertIsNone(row['lease_state'], 'the lease should be released')
+        self.assertIsNotNone(row['last_used_at'], 'history must survive the release')
+
     def test_parallel_claim(self):
         def claim(_):
             try:
