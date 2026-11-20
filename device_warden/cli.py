@@ -102,6 +102,40 @@ def run_command(args):
         return 1
 
 
+# Options each lease-taking subcommand accepts. Anything else that starts with
+# '-' in the first position is a lease ID, not an option.
+LEASE_COMMAND_OPTIONS = {
+    'heartbeat': {'-h', '--help'},
+    'release': {'-h', '--help', '--device', '--session-id'},
+    'adb': {'-h', '--help'},
+}
+
+
+def protect_lease_id(argv):
+    """Insert `--` before a lease ID that starts with '-'.
+
+    Lease IDs come from `secrets.token_urlsafe`, which produces a leading '-'
+    about 1.5% of the time. argparse reads such a value as an option and
+    rejects the command, so `release <lease_id>` would fail for those leases
+    and the device would stay held. `--` ends option parsing, which makes the
+    value positional again.
+    """
+    if not argv or argv[0] not in LEASE_COMMAND_OPTIONS:
+        return argv
+    known = LEASE_COMMAND_OPTIONS[argv[0]]
+    for index, value in enumerate(argv[1:], start=1):
+        if value == '--':
+            return argv
+        if value.startswith('-'):
+            # A real option (or its value) comes first; leave the line alone.
+            if value.split('=', 1)[0] in known:
+                return argv
+            # Otherwise this is a lease ID that happens to start with '-'.
+            return [*argv[:index], '--', *argv[index:]]
+        return argv
+    return argv
+
+
 def main():
     # The help text and error messages are Japanese. On a console whose code
     # page cannot represent them (cp1252 on an English Windows, for example)
@@ -163,7 +197,7 @@ def main():
     install.add_argument('apk_path', metavar='apk')
     install.add_argument('--device', dest='device_ids', action='append')
     install.add_argument('--yes', action='store_true', help='インストールを実行する')
-    args = vars(parser.parse_args())
+    args = vars(parser.parse_args(protect_lease_id(sys.argv[1:])))
     command = args.pop('command')
     try:
         if command == 'claim':

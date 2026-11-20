@@ -14,6 +14,7 @@ def device(**overrides):
         'last_seen': NOW, 'kind': None, 'tool': None, 'session_id': None,
         'title': None, 'project': None, 'workdir': None, 'lease_id': None,
         'acquired_at': None, 'heartbeat_at': None, 'lease_state': None,
+        'last_used_at': None,
     }
     row.update(overrides)
     return row
@@ -29,6 +30,15 @@ class LastUsedColumnTests(unittest.TestCase):
         value = gui.last_used(device(acquired_at=NOW))
         self.assertNotEqual(value, '未使用')
         self.assertIn('2026-', value)
+
+    def test_released_device_still_shows_its_last_use(self):
+        """A released lease is history, not an active one; it must still show."""
+        row = device(acquired_at=None, lease_state=None, last_used_at=NOW)
+        self.assertNotEqual(gui.last_used(row), '未使用')
+
+    def test_history_wins_over_the_active_lease(self):
+        row = device(acquired_at=NOW, last_used_at=NOW + 3600)
+        self.assertEqual(gui.last_used(row), gui.stamp(NOW + 3600))
 
 
 class DeviceListTests(unittest.TestCase):

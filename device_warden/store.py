@@ -248,9 +248,13 @@ class Store:
 
     def list(self, include_hidden=False, session_id=None):
         with self.connect() as db:
+            # `last_used_at` comes from the whole lease history, not just the
+            # active lease: the UI needs to show that a device has never been
+            # used, which is the signal that the tool is not being adopted.
             rows = db.execute('''SELECT d.*, l.id AS lease_id, l.kind, l.tool, l.session_id,
                 l.title, l.project, l.workdir, l.acquired_at, l.heartbeat_at, l.state AS lease_state,
-                l.recovery_reason, l.recovery_at
+                l.recovery_reason, l.recovery_at,
+                (SELECT MAX(h.acquired_at) FROM leases h WHERE h.device_id=d.id) AS last_used_at
                 FROM devices d LEFT JOIN leases l ON l.device_id=d.id
                 AND l.state IN ('active','recovery_required') WHERE (? OR d.hidden=0)
                 ORDER BY COALESCE(d.alias,d.market_name,d.brand || ' ' || d.model,d.model,d.serial)''', (include_hidden,)).fetchall()

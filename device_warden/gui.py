@@ -52,11 +52,12 @@ def last_used(d):
 
     A device that has never been leased is the signal that the tool is not
     being adopted; showing the lease time next to the connection state makes
-    that obvious without opening the audit log.
+    that obvious without opening the audit log. This reads the lease history,
+    not the active lease, so a device that was used and released still shows
+    when it was last used.
     """
-    if d.get('acquired_at'):
-        return stamp(d['acquired_at'])
-    return '未使用'
+    value = d.get('last_used_at') or d.get('acquired_at')
+    return stamp(value) if value else '未使用'
 
 
 class App:
