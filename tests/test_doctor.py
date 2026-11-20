@@ -8,6 +8,7 @@ history rather than report a healthy Broker and stop there.
 import datetime
 import io
 import os
+import sys
 import tempfile
 import threading
 import unittest
@@ -15,7 +16,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
-from device_warden import console, doctor
+from device_warden import cli, console, doctor
 from device_warden.server import make_handler
 from device_warden.store import Store
 
@@ -38,6 +39,20 @@ class ConsoleTests(unittest.TestCase):
     def test_configure_ignores_a_stream_it_cannot_reconfigure(self):
         # A test double or a plain StringIO has no reconfigure; that is not fatal.
         console.configure(io.StringIO())
+
+    def test_cli_help_survives_a_console_that_cannot_encode_japanese(self):
+        """An English Windows console (cp1252) crashed argparse while printing --help."""
+        stream = io.TextIOWrapper(io.BytesIO(), encoding='cp1252')
+        with patch.object(console, 'console_encoding', return_value='cp1252'), \
+             patch('sys.stdout', stream), \
+             patch.object(sys, 'argv', ['device-warden', '--help']):
+            with self.assertRaises(SystemExit) as exit_code:
+                cli.main()
+            stream.flush()
+        self.assertEqual(exit_code.exception.code, 0)
+        # The Japanese help text must not raise; unencodable characters become '?'.
+        written = stream.buffer.getvalue().decode('cp1252', errors='replace')
+        self.assertIn('usage:', written)
 
 
 class UsageSummaryTests(unittest.TestCase):
