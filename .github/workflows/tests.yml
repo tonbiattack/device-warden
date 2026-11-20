@@ -1,0 +1,60 @@
+name: Tests
+
+# release.yml only runs on a version tag, so a change could reach main without
+# any test run. This workflow covers every push and pull request instead.
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: 依存関係を導入
+        shell: pwsh
+        run: |
+          python -m pip install -e .
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Pythonのテスト
+        shell: pwsh
+        run: |
+          python -m unittest discover -s tests -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: OpenCodeプラグインのテスト
+        shell: pwsh
+        run: |
+          node integrations/opencode/test.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: MCPサーバの起動確認
+        shell: pwsh
+        run: |
+          # The MCP server is a stdio process; a handshake proves it starts and
+          # answers without needing a Broker or a device.
+          $request = '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}'
+          $reply = $request | python -m device_warden.mcp
+          if ($LASTEXITCODE -ne 0) { throw "MCPサーバが異常終了しました: $LASTEXITCODE" }
+          $parsed = $reply | ConvertFrom-Json
+          if ($parsed.result.serverInfo.name -ne 'device-warden') {
+            throw "MCPサーバの応答が不正です: $reply"
+          }
+          Write-Host "MCP handshake OK: $($parsed.result.protocolVersion)"
+      - name: CLIの起動確認
+        shell: pwsh
+        run: |
+          # `--help` exercises argument parsing without needing a running Broker.
+          python -m device_warden.cli --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "CLIが起動しませんでした" }
+          python -m device_warden.cli run --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "run サブコマンドが壊れています" }

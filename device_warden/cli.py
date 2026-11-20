@@ -4,6 +4,7 @@ import subprocess
 import sys
 import threading
 from .client import call
+from .console import configure as configure_console
 from .store import WardenError
 
 
@@ -102,6 +103,10 @@ def run_command(args):
 
 
 def main():
+    # The help text and error messages are Japanese. On a console whose code
+    # page cannot represent them (cp1252 on an English Windows, for example)
+    # argparse would crash while printing --help, so match the console first.
+    configure_console()
     parser = argparse.ArgumentParser(prog='device-warden')
     sub = parser.add_subparsers(dest='command', required=True)
     for name in ('list', 'status', 'refresh', 'audit'):

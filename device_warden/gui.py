@@ -47,6 +47,18 @@ def stamp(value):
     return datetime.datetime.fromtimestamp(value).strftime('%Y-%m-%d %H:%M:%S') if value else '不明'
 
 
+def last_used(d):
+    """Show when this device was last leased, so an unused tool is visible.
+
+    A device that has never been leased is the signal that the tool is not
+    being adopted; showing the lease time next to the connection state makes
+    that obvious without opening the audit log.
+    """
+    if d.get('acquired_at'):
+        return stamp(d['acquired_at'])
+    return '未使用'
+
+
 class App:
     def __init__(self, root):
         self.root = root
@@ -63,9 +75,9 @@ class App:
         apps = ttk.Frame(self.notebook)
         self.notebook.add(devices, text='端末')
         self.notebook.add(apps, text='アプリ')
-        columns = ('name', 'connection', 'status', 'owner', 'policy', 'seen')
+        columns = ('name', 'connection', 'status', 'owner', 'policy', 'used', 'seen')
         self.tree = ttk.Treeview(devices, columns=columns, show='headings', height=12)
-        for key, title, width in [('name','端末',180),('connection','ADB',110),('status','利用可否',200),('owner','確保者',240),('policy','AI',80),('seen','最終確認',150)]:
+        for key, title, width in [('name','端末',160),('connection','ADB',100),('status','利用可否',185),('owner','確保者',200),('policy','AI',55),('used','最終利用',145),('seen','最終確認',145)]:
             self.tree.heading(key, text=title)
             self.tree.column(key, width=width)
         self.tree.pack(fill='both', expand=True)
@@ -143,7 +155,7 @@ class App:
             name = d['display_name']
             if d['hidden']:
                 name += '（非表示）'
-            self.tree.insert('', 'end', iid=d['id'], values=(name, f"{d['connection']} / {d['transport']}", status(d), owner, '許可' if d['ai_allowed'] else '禁止', stamp(d['last_seen'])))
+            self.tree.insert('', 'end', iid=d['id'], values=(name, f"{d['connection']} / {d['transport']}", status(d), owner, '許可' if d['ai_allowed'] else '禁止', last_used(d), stamp(d['last_seen'])))
         if selected_id and self.tree.exists(selected_id):
             self.tree.selection_set(selected_id)
         if not rows:

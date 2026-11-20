@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "device-warden"
-version = "0.1.0"
+version = "0.2.0"
 description = "Local Android device lease manager"
 readme = "README.md"
 license = { text = "MIT" }
@@ -17,6 +17,7 @@ device-warden-broker = "device_warden.server:main"
 device-warden-tray = "device_warden.tray:main"
 device-warden-autostart = "device_warden.autostart:main"
 device-warden-mcp = "device_warden.mcp:main"
+device-warden-doctor = "device_warden.doctor:main"
 
 [tool.setuptools.packages.find]
 include = ["device_warden*"]

@@ -497,6 +497,31 @@ class Store:
         with self.connect() as db:
             db.execute("INSERT OR REPLACE INTO settings VALUES('default_ai_allowed',?)", ('1' if allowed else '0',))
 
+    def usage_summary(self):
+        """Report whether the tool is actually being used.
+
+        A working Broker and tray prove the app runs, not that anyone uses it.
+        The lease history is the only evidence of real use, so `doctor` reports
+        it: a long gap or a pile of zero-second leases means the tool is being
+        started but not adopted.
+        """
+        with self.connect() as db:
+            row = db.execute('''SELECT COUNT(*) AS total,
+                  SUM(CASE WHEN state='released' AND recovery_reason IS NULL THEN 1 ELSE 0 END) AS clean,
+                  SUM(CASE WHEN recovery_reason IS NOT NULL THEN 1 ELSE 0 END) AS recovered,
+                  MAX(acquired_at) AS last_claim
+                FROM leases''').fetchone()
+            # A lease that lived under a second is a claim immediately followed by
+            # a release: a smoke test, not work that used the device.
+            instant = db.execute('''SELECT COUNT(*) FROM leases
+                WHERE heartbeat_at - acquired_at < 1''').fetchone()[0]
+            tools = [dict(row) for row in db.execute(
+                'SELECT tool, COUNT(*) AS count FROM leases GROUP BY tool ORDER BY count DESC')]
+        return {'total': row['total'] or 0, 'clean': row['clean'] or 0,
+                'recovered': row['recovered'] or 0, 'instant': instant,
+                'last_claim': row['last_claim'], 'tools': tools}
+
+
     # --- Tracked applications -------------------------------------------------
     #
     # Only explicitly registered packages are collected. Scanning every installed

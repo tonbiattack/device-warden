@@ -18,13 +18,14 @@ import sys
 import threading
 import time
 
+from . import __version__
 from .client import call
 from .store import WardenError
 
 PROTOCOL_VERSION = '2025-06-18'
 # Revisions this server can speak. The client offers one; echo it when known.
 SUPPORTED_VERSIONS = ('2024-11-05', '2025-03-26', '2025-06-18', '2025-11-25')
-SERVER_INFO = {'name': 'device-warden', 'version': '0.1.0'}
+SERVER_INFO = {'name': 'device-warden', 'version': __version__}
 HEARTBEAT_SECONDS = 30
 
 TOOLS = [
