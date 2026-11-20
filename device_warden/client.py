@@ -1,14 +1,23 @@
 import json
+import os
 import urllib.error
 import urllib.request
 from .server import token_file
 from .store import WardenError
 
+# The Broker listens on a fixed port so every client finds it without config.
+# Tests point this at an ephemeral port instead of starting a second Broker.
+DEFAULT_PORT = 47631
+
+
+def broker_port():
+    return int(os.environ.get('DEVICE_WARDEN_PORT') or DEFAULT_PORT)
+
 
 def call(action, **args):
     try:
         token = token_file().read_text(encoding='utf-8').strip()
-        request = urllib.request.Request('http://127.0.0.1:47631/' + action,
+        request = urllib.request.Request(f'http://127.0.0.1:{broker_port()}/' + action,
             data=json.dumps(args).encode(), headers={'Authorization': 'Bearer ' + token,
             'Content-Type': 'application/json'}, method='POST')
         # Bypass configured proxies for the local authenticated endpoint.
