@@ -74,7 +74,8 @@ def make_handler(store, token):
                            'apps-matrix': store.app_matrix, 'apps-install': store.install_apk,
                            'force-release': store.force_release,
                            'update': store.update_device, 'delete': store.delete_device,
-                           'default-policy': store.default_policy}
+                           'default-policy': store.default_policy,
+                           'usage': store.usage_summary}
                 action = self.path.strip('/')
                 if action not in actions:
                     return self.reply(404, {'error': '不明な操作です。'})

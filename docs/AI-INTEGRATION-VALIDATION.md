@@ -26,6 +26,17 @@
 
 一方、Codex・Command Codeの実ツールでの本手順、2つのOpenCodeセッションによる同時確保、セッション終了時の挙動は未実施。他の利用者が保持する要確認リースは、内容確認のみ行い解放していない。
 
+### 2026-11-20 追記
+
+Issue #15 は上記の未実施項目を残したままクローズされている。完了条件を満たしていないため、この文書を**未検証の記録**として残す。
+
+同日、次の2点を追加で確認した。
+
+- CLIの `run`（`claim` → コマンド実行中30秒ごとのheartbeat → `release`）が、実Brokerに対して40秒のコマンドで動作すること。`heartbeat_at - acquired_at = 30s` を確認。
+- MCPサーバ（`device-warden-mcp`）が、DSHが使うのと同じ `@modelcontextprotocol/client` 2.2.0 でハンドシェイク・`tools/list`・`claim`/`status`/`release` の往復に成功すること。
+
+いずれも**1セッション・1端末**での確認であり、複数セッションの同時確保やCodex・Command Codeでの検証は依然として未実施である。
+
 ### 残作業（この環境では実施できないもの）
 
 - Codex・Command Codeを実際にインストールした環境での手順実行。
