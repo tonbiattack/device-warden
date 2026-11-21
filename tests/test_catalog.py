@@ -6,6 +6,7 @@ understands. The link format is asserted against the shapes read from
 Obtainium's `lib/pages/home.dart`.
 """
 
+import hashlib
 import json
 import os
 import tempfile
@@ -177,8 +178,9 @@ class CatalogStoreTests(unittest.TestCase):
     def test_register_refuses_a_disconnected_device(self):
         self.store.catalog_add('com.example.app', 'https://github.com/owner/repo')
         self.store.discover('List of devices attached\n')
-        with self.assertRaises(WardenError):
-            self.store.catalog_register(self.device, acknowledge=True)
+        result = self.store.catalog_register(self.device, acknowledge=True)
+        self.assertFalse(result['devices'][0]['ok'])
+        self.assertIn('接続されていません', result['devices'][0]['error'])
 
     def test_register_opens_one_link_per_app(self):
         self.store.catalog_add('com.example.app', 'https://github.com/owner/repo')
@@ -189,8 +191,9 @@ class CatalogStoreTests(unittest.TestCase):
             run_adb.return_value = type('Done', (), {
                 'returncode': 0, 'stdout': 'Starting: Intent', 'stderr': ''})()
             result = self.store.catalog_register(self.device, acknowledge=True)
-        self.assertEqual(len(result['results']), 2)
-        self.assertTrue(all(item['ok'] for item in result['results']))
+        results = result['devices'][0]['results']
+        self.assertEqual(len(results), 2)
+        self.assertTrue(all(item['ok'] for item in results))
         # Each call must address the device by serial and open an add link.
         for call in run_adb.call_args_list:
             command = call.args[0]
@@ -205,8 +208,9 @@ class CatalogStoreTests(unittest.TestCase):
                    return_value={'checked': True, 'has_release': False,
                                  'reason': 'リリースがありません'}):
             result = self.store.catalog_register(self.device, acknowledge=True)
-        self.assertFalse(result['results'][0]['ok'])
-        self.assertTrue(result['results'][0]['skipped'])
+        results = result['devices'][0]['results']
+        self.assertFalse(results[0]['ok'])
+        self.assertTrue(results[0]['skipped'])
         run_adb.assert_not_called()
 
     def test_register_proceeds_when_the_release_check_is_unknown(self):
@@ -218,7 +222,7 @@ class CatalogStoreTests(unittest.TestCase):
             run_adb.return_value = type('Done', (), {
                 'returncode': 0, 'stdout': '', 'stderr': ''})()
             result = self.store.catalog_register(self.device, acknowledge=True)
-        self.assertTrue(result['results'][0]['ok'])
+        self.assertTrue(result['devices'][0]['results'][0]['ok'])
 
     def test_register_reports_a_failure_per_app(self):
         self.store.catalog_add('com.example.app', 'https://github.com/owner/repo')
@@ -226,7 +230,7 @@ class CatalogStoreTests(unittest.TestCase):
             run_adb.return_value = type('Done', (), {
                 'returncode': 1, 'stdout': '', 'stderr': 'Error: Activity not started'})()
             result = self.store.catalog_register(self.device, acknowledge=True)
-        self.assertFalse(result['results'][0]['ok'])
+        self.assertFalse(result['devices'][0]['results'][0]['ok'])
 
     def test_register_is_audited(self):
         self.store.catalog_add('com.example.app', 'https://github.com/owner/repo')
@@ -310,6 +314,224 @@ class CatalogStoreTests(unittest.TestCase):
                 'returncode': 0, 'stdout': 'package:/data/app/base.apk', 'stderr': ''})()
             result = self.store.catalog_signatures(self.device)
         self.assertIsNone(result['results'][0]['digest'])
+
+
+class ObtainiumInstallTests(unittest.TestCase):
+    """Obtainium is an Android app, so every device needs its own copy."""
+
+    def test_asset_is_chosen_per_abi(self):
+        self.assertEqual(obtainium.choose_asset('arm64-v8a'), 'app-arm64-v8a-release.apk')
+        self.assertEqual(obtainium.choose_asset('x86_64'), 'app-x86_64-release.apk')
+        self.assertEqual(obtainium.choose_asset('armeabi-v7a'), 'app-armeabi-v7a-release.apk')
+
+    def test_unknown_abi_falls_back_to_the_universal_build(self):
+        self.assertEqual(obtainium.choose_asset('mips'), obtainium.OBTAINIUM_UNIVERSAL)
+        self.assertEqual(obtainium.choose_asset(None), obtainium.OBTAINIUM_UNIVERSAL)
+
+    def test_release_assets_are_indexed_by_name(self):
+        payload = {'assets': [
+            {'name': 'app-x86_64-release.apk', 'browser_download_url': 'https://x/a.apk',
+             'digest': 'sha256:ABC123', 'size': 10},
+            {'name': 'app-release.apk', 'browser_download_url': 'https://x/b.apk',
+             'digest': None, 'size': 20},
+        ]}
+        assets = obtainium.release_assets(payload)
+        self.assertEqual(assets['app-x86_64-release.apk']['digest'], 'abc123')
+        self.assertEqual(assets['app-x86_64-release.apk']['url'], 'https://x/a.apk')
+        self.assertIsNone(assets['app-release.apk']['digest'])
+
+    def test_download_is_verified_against_the_published_digest(self):
+        with tempfile.TemporaryDirectory() as folder:
+            apk = Path(folder) / 'app.apk'
+            apk.write_bytes(b'fake apk')
+            digest = hashlib.sha256(b'fake apk').hexdigest()
+            self.assertTrue(obtainium.verify_download(apk, digest)['verified'])
+            self.assertFalse(obtainium.verify_download(apk, 'deadbeef')['verified'])
+
+    def test_missing_digest_is_not_treated_as_verified(self):
+        with tempfile.TemporaryDirectory() as folder:
+            apk = Path(folder) / 'app.apk'
+            apk.write_bytes(b'fake apk')
+            result = obtainium.verify_download(apk, None)
+        self.assertFalse(result['verified'])
+
+    def test_fetch_release_uses_gh(self):
+        calls = []
+        def runner(command, **kwargs):
+            calls.append(command)
+            return type('Done', (), {'returncode': 0,
+                                     'stdout': '{"tag_name": "v1.7.4", "assets": []}',
+                                     'stderr': ''})()
+        payload = obtainium.fetch_release(runner=runner)
+        self.assertEqual(payload['tag_name'], 'v1.7.4')
+        self.assertIn('repos/ImranR98/Obtainium/releases/latest', calls[0])
+
+    def test_fetch_release_failure_is_a_catalog_error(self):
+        def runner(command, **kwargs):
+            return type('Done', (), {'returncode': 1, 'stdout': '', 'stderr': 'boom'})()
+        with self.assertRaises(obtainium.CatalogError):
+            obtainium.fetch_release(runner=runner)
+
+
+class ObtainiumInstallStoreTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.store = Store(Path(self.temp.name) / 'db.sqlite')
+        self.store.discover('List of devices attached\nserial-one device model:Phone\n')
+        self.device = self.store.list()[0]['id']
+
+    def test_install_requires_acknowledgement(self):
+        with self.assertRaises(WardenError):
+            self.store.obtainium_install([self.device])
+
+    def test_install_picks_the_abi_asset_and_verifies_it(self):
+        release = {'tag_name': 'v1.7.4', 'assets': [
+            {'name': 'app-x86_64-release.apk', 'browser_download_url': 'https://x/a.apk',
+             'digest': 'sha256:' + hashlib.sha256(b'apk').hexdigest(), 'size': 3}]}
+
+        def adb(command, **kwargs):
+            if 'getprop' in command:
+                return type('Done', (), {'returncode': 0, 'stdout': 'x86_64\n', 'stderr': ''})()
+            if 'install' in command:
+                return type('Done', (), {'returncode': 0, 'stdout': 'Success', 'stderr': ''})()
+            return type('Done', (), {'returncode': 0, 'stdout': '', 'stderr': ''})()
+
+        def host(command, **kwargs):
+            if command[0] == 'gh':
+                # `gh release download` writes the file into --dir.
+                folder = command[command.index('--dir') + 1]
+                (Path(folder) / 'app-x86_64-release.apk').write_bytes(b'apk')
+                return type('Done', (), {'returncode': 0, 'stdout': '', 'stderr': ''})()
+            return type('Done', (), {'returncode': 0, 'stdout': '', 'stderr': ''})()
+
+        with patch('device_warden.store.run_adb', side_effect=adb), \
+             patch('device_warden.obtainium.fetch_release', return_value=release), \
+             patch('device_warden.store.subprocess.run', side_effect=host):
+            result = self.store.obtainium_install([self.device], acknowledge=True)
+        device = result['devices'][0]
+        self.assertTrue(device['ok'])
+        self.assertEqual(device['abi'], 'x86_64')
+        self.assertEqual(device['asset'], 'app-x86_64-release.apk')
+
+    def test_install_refuses_a_digest_mismatch(self):
+        release = {'tag_name': 'v1.7.4', 'assets': [
+            {'name': 'app-x86_64-release.apk', 'browser_download_url': 'https://x/a.apk',
+             'digest': 'sha256:' + '0' * 64, 'size': 3}]}
+
+        def adb(command, **kwargs):
+            if 'getprop' in command:
+                return type('Done', (), {'returncode': 0, 'stdout': 'x86_64\n', 'stderr': ''})()
+            return type('Done', (), {'returncode': 0, 'stdout': 'Success', 'stderr': ''})()
+
+        def host(command, **kwargs):
+            if command[0] == 'gh':
+                folder = command[command.index('--dir') + 1]
+                (Path(folder) / 'app-x86_64-release.apk').write_bytes(b'apk')
+            return type('Done', (), {'returncode': 0, 'stdout': '', 'stderr': ''})()
+
+        with patch('device_warden.store.run_adb', side_effect=adb) as run_adb, \
+             patch('device_warden.obtainium.fetch_release', return_value=release), \
+             patch('device_warden.store.subprocess.run', side_effect=host):
+            result = self.store.obtainium_install([self.device], acknowledge=True)
+        self.assertFalse(result['devices'][0]['ok'])
+        self.assertIn('SHA-256', result['devices'][0]['error'])
+        # A mismatched APK must never reach `adb install`.
+        for call in run_adb.call_args_list:
+            self.assertNotIn('install', call.args[0])
+
+    def test_status_reports_installed_and_version(self):
+        dump = ('Packages:\n  Package [dev.imranr.obtainium] (abc):\n'
+                '    versionName=1.7.4\n')
+        with patch('device_warden.store.run_adb') as run_adb:
+            run_adb.return_value = type('Done', (), {
+                'returncode': 0, 'stdout': dump, 'stderr': ''})()
+            result = self.store.obtainium_status([self.device])
+        self.assertTrue(result['devices'][0]['installed'])
+        self.assertEqual(result['devices'][0]['version'], '1.7.4')
+
+    def test_status_reports_a_missing_app(self):
+        with patch('device_warden.store.run_adb') as run_adb:
+            run_adb.return_value = type('Done', (), {
+                'returncode': 0, 'stdout': 'Unable to find package', 'stderr': ''})()
+            result = self.store.obtainium_status([self.device])
+        self.assertFalse(result['devices'][0]['installed'])
+
+
+class MultiDeviceRegisterTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.store = Store(Path(self.temp.name) / 'db.sqlite')
+        self.store.discover('List of devices attached\nserial-one device model:One\n'
+                            'serial-two device model:Two\n')
+        self.devices = [row['id'] for row in self.store.list()]
+        self.store.catalog_add('com.example.app', 'https://github.com/owner/repo')
+
+    def test_register_reaches_every_device(self):
+        with patch('device_warden.store.run_adb') as run_adb, \
+             patch('device_warden.obtainium.check_releases',
+                   return_value={'checked': True, 'has_release': True}):
+            run_adb.return_value = type('Done', (), {
+                'returncode': 0, 'stdout': 'Status: ok', 'stderr': ''})()
+            result = self.store.catalog_register(self.devices, acknowledge=True)
+        self.assertEqual(len(result['devices']), 2)
+        self.assertTrue(all(device['ok'] for device in result['devices']))
+        serials = {call.args[0][2] for call in run_adb.call_args_list}
+        self.assertEqual(serials, {'serial-one', 'serial-two'})
+
+    def test_one_unreachable_device_does_not_stop_the_others(self):
+        self.store.discover('List of devices attached\nserial-one device model:One\n')
+        with patch('device_warden.store.run_adb') as run_adb, \
+             patch('device_warden.obtainium.check_releases',
+                   return_value={'checked': True, 'has_release': True}):
+            run_adb.return_value = type('Done', (), {
+                'returncode': 0, 'stdout': 'Status: ok', 'stderr': ''})()
+            result = self.store.catalog_register(self.devices, acknowledge=True)
+        self.assertTrue(result['devices'][0]['ok'])
+        self.assertFalse(result['devices'][1]['ok'])
+        self.assertIn('接続されていません', result['devices'][1]['error'])
+
+    def test_bulk_uses_one_import_link(self):
+        with patch('device_warden.store.run_adb') as run_adb, \
+             patch('device_warden.obtainium.check_releases',
+                   return_value={'checked': True, 'has_release': True}):
+            run_adb.return_value = type('Done', (), {
+                'returncode': 0, 'stdout': 'Status: ok', 'stderr': ''})()
+            result = self.store.catalog_register(self.devices[:1], acknowledge=True, bulk=True)
+        device = result['devices'][0]
+        self.assertTrue(device['bulk'])
+        self.assertTrue(device['link'].startswith('obtainium://apps/'))
+        # One link for the whole catalog, not one per app.
+        self.assertEqual(run_adb.call_count, 1)
+
+    def test_bulk_skips_a_repository_without_releases(self):
+        self.store.catalog_add('com.other.app', 'https://github.com/owner/other')
+        def releases(url, **kwargs):
+            if 'other' in url:
+                return {'checked': True, 'has_release': False, 'reason': 'リリースがありません'}
+            return {'checked': True, 'has_release': True}
+        with patch('device_warden.store.run_adb') as run_adb, \
+             patch('device_warden.obtainium.check_releases', side_effect=releases):
+            run_adb.return_value = type('Done', (), {
+                'returncode': 0, 'stdout': 'Status: ok', 'stderr': ''})()
+            result = self.store.catalog_register(self.devices[:1], acknowledge=True, bulk=True)
+        skipped = [r for r in result['devices'][0]['results'] if r.get('skipped')]
+        self.assertEqual([r['package'] for r in skipped], ['com.other.app'])
+
+
+class ClientTimeoutTests(unittest.TestCase):
+    """A slow install must not be reported as a connection failure."""
+
+    def test_slow_actions_get_a_longer_timeout(self):
+        from device_warden import client
+        self.assertGreaterEqual(client.timeout_for('obtainium-install'), 600)
+        self.assertGreaterEqual(client.timeout_for('apps-install'), 600)
+
+    def test_fast_actions_keep_the_short_timeout(self):
+        from device_warden import client
+        self.assertEqual(client.timeout_for('list'), 15)
+        self.assertEqual(client.timeout_for('claim'), 15)
 
 
 class CatalogBrokerTests(unittest.TestCase):

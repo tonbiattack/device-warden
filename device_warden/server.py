@@ -81,7 +81,9 @@ def make_handler(store, token):
                            'catalog-links': store.catalog_links,
                            'catalog-register': store.catalog_register,
                            'catalog-signatures': store.catalog_signatures,
-                           'catalog-import-link': store.catalog_import_link}
+                           'catalog-import-link': store.catalog_import_link,
+                           'obtainium-status': store.obtainium_status,
+                           'obtainium-install': store.obtainium_install}
                 action = self.path.strip('/')
                 if action not in actions:
                     return self.reply(404, {'error': '不明な操作です。'})

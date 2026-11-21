@@ -52,10 +52,21 @@ def catalog_command(parser, args):
         result = call('catalog-import-link', **args)
     elif action == 'signatures':
         result = call('catalog-signatures', **args)
+    elif action == 'status':
+        result = call('obtainium-status', device_ids=args['device_ids'])
+    elif action == 'install':
+        if not args.pop('yes'):
+            # Installing an app writes to the device, so show the plan first.
+            status = call('obtainium-status', device_ids=args['device_ids'])
+            print(json.dumps(status, ensure_ascii=False, indent=2))
+            print('実際にインストールするには --yes を付けてください。', file=sys.stderr)
+            return 2
+        args['acknowledge'] = True
+        result = call('obtainium-install', **args)
     else:
         if not args.pop('yes'):
             # Opening Obtainium writes to the device, so show the plan first.
-            plan = call('catalog-links', device_id=args['device_id'],
+            plan = call('catalog-links', device_id=args['device_ids'][0],
                         packages=args.get('packages'))
             print(json.dumps({'device': plan['serial'], 'connection': plan['connection'],
                               'apps': [{'package': app['package'], 'url': app['url']}
@@ -244,12 +255,19 @@ def main():
     catalog_import = catalog_sub.add_parser('import-link', help='一括インポート用リンクを表示')
     catalog_import.add_argument('--package', dest='packages', action='append')
     catalog_register = catalog_sub.add_parser('register', help='端末のObtainiumで登録画面を開く')
-    catalog_register.add_argument('device_id')
+    catalog_register.add_argument('device_ids', nargs='+', metavar='device_id')
     catalog_register.add_argument('--package', dest='packages', action='append')
+    catalog_register.add_argument('--bulk', action='store_true',
+                                  help='1つのインポートリンクで全件をまとめて登録する')
     catalog_register.add_argument('--yes', action='store_true', help='実際に端末で開く')
     catalog_signatures = catalog_sub.add_parser('signatures', help='端末の署名証明書を確認')
     catalog_signatures.add_argument('device_id')
     catalog_signatures.add_argument('--package', dest='packages', action='append')
+    catalog_status = catalog_sub.add_parser('status', help='端末にObtainiumが入っているか確認')
+    catalog_status.add_argument('device_ids', nargs='+', metavar='device_id')
+    catalog_install = catalog_sub.add_parser('install', help='Obtainiumを端末にインストール')
+    catalog_install.add_argument('device_ids', nargs='+', metavar='device_id')
+    catalog_install.add_argument('--yes', action='store_true', help='実際にインストールする')
     args = vars(parser.parse_args(protect_lease_id(sys.argv[1:])))
     command = args.pop('command')
     try:

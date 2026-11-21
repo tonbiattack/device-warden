@@ -148,3 +148,84 @@ def adb_open_args(link, package=OBTAINIUM_PACKAGE):
     """
     return ['shell', 'am', 'start', '-W', '-a', 'android.intent.action.VIEW',
             '-d', link, package]
+
+
+# --- Installing Obtainium itself ---------------------------------------------
+#
+# Obtainium is an Android app, so every device needs its own copy. Fetching it
+# by hand on each device is the step that makes the whole catalog workflow feel
+# like a chore, so Device Warden can install it from the official release.
+#
+# The release publishes one APK per ABI plus a universal build. Picking the
+# ABI-specific file keeps the download small; the universal build is the
+# fallback when the device reports an ABI we do not recognise.
+
+OBTAINIUM_REPO = 'ImranR98/Obtainium'
+# ABI -> asset name in the release. `app-release.apk` is the universal build.
+OBTAINIUM_ASSETS = {
+    'arm64-v8a': 'app-arm64-v8a-release.apk',
+    'armeabi-v7a': 'app-armeabi-v7a-release.apk',
+    'x86_64': 'app-x86_64-release.apk',
+}
+OBTAINIUM_UNIVERSAL = 'app-release.apk'
+
+
+def choose_asset(abi):
+    """Pick the release asset for a device ABI, falling back to the universal build."""
+    return OBTAINIUM_ASSETS.get((abi or '').strip(), OBTAINIUM_UNIVERSAL)
+
+
+def release_assets(payload):
+    """Map asset name -> {url, digest, size} from a GitHub release payload."""
+    assets = {}
+    for asset in payload.get('assets') or []:
+        digest = asset.get('digest') or ''
+        assets[asset.get('name')] = {
+            'url': asset.get('browser_download_url'),
+            'digest': digest.split(':', 1)[1].lower() if digest.startswith('sha256:') else None,
+            'size': asset.get('size'),
+        }
+    return assets
+
+
+def fetch_release(runner=None):
+    """Read the latest Obtainium release from the GitHub API.
+
+    `gh` is used rather than a raw HTTP call so the request carries the user's
+    existing authentication and rate limit.
+    """
+    import json
+    import subprocess
+
+    runner = runner or subprocess.run
+    try:
+        result = runner(['gh', 'api', f'repos/{OBTAINIUM_REPO}/releases/latest'],
+                        capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise CatalogError(f'Obtainiumのリリースを取得できませんでした: {exc}') from exc
+    if result.returncode != 0:
+        raise CatalogError('Obtainiumのリリースを取得できませんでした（gh が失敗）。')
+    try:
+        payload = json.loads(result.stdout or '{}')
+    except ValueError as exc:
+        raise CatalogError('Obtainiumのリリース応答を解釈できませんでした。') from exc
+    if not payload.get('tag_name'):
+        raise CatalogError('Obtainiumのリリースが見つかりませんでした。')
+    return payload
+
+
+def verify_download(path, expected_digest):
+    """Check a downloaded APK against the release's SHA-256.
+
+    The APK is installed on a device, so a corrupted or substituted download
+    must be rejected before it reaches one.
+    """
+    import hashlib
+    from pathlib import Path
+
+    if not expected_digest:
+        return {'verified': False, 'reason': 'リリースにSHA-256が無いため検証できません。'}
+    digest = hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    if digest != expected_digest.lower():
+        return {'verified': False, 'reason': f'SHA-256が一致しません（{digest}）。'}
+    return {'verified': True, 'digest': digest}
