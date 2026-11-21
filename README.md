@@ -320,13 +320,44 @@ device-warden apps install app-debug.apk          # 対象端末を確認する�
 ```powershell
 device-warden catalog add com.example.app https://github.com/owner/repo
 device-warden catalog list
-device-warden catalog links <device_id>              # 開くリンクを確認するだけ
-device-warden catalog register <device_id> --yes     # 端末のObtainiumで登録画面を開く
-device-warden catalog signatures <device_id>         # 端末の署名証明書を確認
-device-warden catalog import-link                    # 一括インポート用リンク
+device-warden catalog status <device_id>...            # Obtainiumが入っているか確認
+device-warden catalog install <device_id>... --yes     # Obtainiumを端末に入れる
+device-warden catalog register <device_id>... --yes    # 1件ずつ登録画面を開く
+device-warden catalog register <device_id>... --bulk --yes  # 1つのリンクで全件登録
+device-warden catalog links <device_id>                # 開くリンクを確認するだけ
+device-warden catalog signatures <device_id>           # 端末の署名証明書を確認
+device-warden catalog import-link                      # 一括インポート用リンク
 ```
 
 カタログに登録すると、そのパッケージは「アプリ」タブのバージョン管理にも自動で加わります。
+
+### 端末ごとの準備
+
+Obtainium は Android アプリなので、**端末ごとにインストールが必要**です。`catalog install` が公式リリースから入れるので、手動でAPKを探す必要はありません。
+
+```powershell
+device-warden catalog status <device_id>            # まず確認
+device-warden catalog install <device_id> --yes     # 入っていなければ入れる
+device-warden catalog register <device_id> --bulk --yes
+```
+
+`install` は端末の ABI（`arm64-v8a` / `x86_64` / `armeabi-v7a`）に合うAPKを選び、**リリースの SHA-256 と照合してから**インストールします。照合に失敗したAPKは端末に送りません。ABIが判定できない場合はユニバーサルAPKにフォールバックします。
+
+複数の端末を一度に指定できます。1台が未接続でも、他の端末の処理は続行します。
+
+```powershell
+device-warden catalog install <id1> <id2> --yes
+device-warden catalog register <id1> <id2> --bulk --yes
+```
+
+### 登録モードの使い分け
+
+| モード | 動作 | 向いている場面 |
+| --- | --- | --- |
+| 既定（1件ずつ） | アプリごとに `add` リンクを開く。Obtainium が既存項目を開くので重複しない | 1〜2件だけ登録する |
+| `--bulk` | 1つのインポートリンクで全件登録 | カタログ全体を新しい端末に入れる |
+
+`--bulk` は Obtainium のインポート確認ダイアログを1回押すだけで済みます。リリースの無いリポジトリは自動で除外されます。
 
 ### リンクの形式
 
@@ -364,13 +395,14 @@ Obtainium のソース（`lib/pages/home.dart`）が解釈する形式に合わ�
 
 2026-11-21 に、エミュレーター（x86_64）と実機（arm64）の2台で確認しました。
 
-- Obtainium v1.7.4 を両端末にインストールし、`catalog register` で「アプリの追加」画面が開き、URLが入ることを確認
+- `catalog install` が ABI を判定し、SHA-256 を照合して Obtainium v1.7.4 を導入できることを確認
+- `catalog register` で「アプリの追加」画面が開き、URLが入ることを確認
+- `catalog register --bulk` で全件が1回のインポートで入ることを確認（リリースの無いリポジトリは自動除外）
 - 登録後、Obtainium が `v0.4.1 インストール済み / 最新` のようにバージョンを解決することを確認
 - `catalog signatures` の値が Obtainium の「証明書ハッシュ」と一致することを両端末で確認
-- リリースの無いリポジトリが、無反応ではなく理由付きでスキップされることを確認
 - 登録後に `apps scan` で端末別バージョンを再取得できることを確認
 
-**未検証**: Obtainium 上での実際のダウンロード・インストール操作（`Install` / `Update` の実行）。Device Warden は Obtainium に登録するところまでを担当し、取得とインストールは Obtainium の操作です。
+**未検証**: Obtainium 上での実際のダウンロード・インストール操作（`Install` / `Update` の実行）。Device Warden は Obtainium の導入と登録までを担当し、アプリの取得とインストールは Obtainium の操作です。
 
 ## テスト
 

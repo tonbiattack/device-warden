@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import secrets
 import shutil
 import sqlite3
@@ -623,13 +624,19 @@ class Store:
         return {'device_id': device['id'], 'serial': device['serial'],
                 'connection': device['connection'], 'apps': rows}
 
-    def catalog_register(self, device_id, packages=None, acknowledge=False):
-        """Open Obtainium's add link for each app on the device.
+    def catalog_register(self, device_ids, packages=None, acknowledge=False, bulk=False):
+        """Register catalog apps in Obtainium on one or more devices.
 
         Registration writes to the device's Obtainium database, so it needs an
-        explicit acknowledgement. Each app is opened separately: Obtainium's
-        `add` link opens the existing entry when the app is already registered,
-        which is how duplicates are avoided.
+        explicit acknowledgement.
+
+        Two modes, because they trade off differently:
+
+        - Per app (`add` link): Obtainium opens the existing entry when the app
+          is already registered, so duplicates are impossible, but each app is a
+          separate screen the operator has to confirm.
+        - Bulk (`apps` import): one link registers the whole catalog, but
+          Obtainium shows an import dialog that must be confirmed once.
 
         A repository without a release is reported before anything is opened:
         Obtainium's Add screen does nothing for such a repository, so opening it
@@ -637,9 +644,49 @@ class Store:
         """
         if acknowledge is not True:
             raise WardenError('Obtainiumへの登録には acknowledge が必要です。')
+        if isinstance(device_ids, str):
+            device_ids = [device_ids]
+        if not device_ids:
+            raise WardenError('端末を指定してください。')
+        results = []
+        for device_id in device_ids:
+            try:
+                results.append(self._register_one(device_id, packages, bulk))
+            except WardenError as exc:
+                # One unreachable device must not stop the others.
+                results.append({'device_id': device_id, 'ok': False, 'error': str(exc)})
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            db.execute('INSERT INTO audit VALUES(?,?,?,?)',
+                       (time.time(), 'obtainium_register', ','.join(device_ids),
+                        json.dumps({'bulk': bulk,
+                                    'ok': [r.get('ok') for r in results]}, ensure_ascii=False)))
+            db.commit()
+        return {'devices': results}
+
+    def _register_one(self, device_id, packages, bulk):
         plan = self.catalog_links(device_id, packages)
         if plan['connection'] != 'connected':
             raise WardenError('端末が接続されていません。')
+        if bulk:
+            usable = []
+            skipped = []
+            for app in plan['apps']:
+                release = obtainium.check_releases(app['url'])
+                if release.get('checked') and not release.get('has_release'):
+                    skipped.append({'package': app['package'], 'ok': False,
+                                    'skipped': True, 'reason': release['reason']})
+                else:
+                    usable.append(app)
+            if not usable:
+                return {'device_id': device_id, 'ok': False, 'bulk': True,
+                        'results': skipped, 'error': '登録できるアプリがありません。'}
+            link = obtainium.import_link(usable)
+            opened = self._open_link(plan['serial'], link)
+            return {'device_id': device_id, 'ok': opened['ok'], 'bulk': True,
+                    'link': link, 'output': opened.get('output'),
+                    'results': [{'package': app['package'], 'ok': opened['ok']}
+                                for app in usable] + skipped}
         results = []
         for app in plan['apps']:
             release = obtainium.check_releases(app['url'])
@@ -648,24 +695,136 @@ class Store:
                                 'skipped': True, 'reason': release['reason']})
                 continue
             link = obtainium.add_link(app['url'])
-            args = obtainium.adb_open_args(link)
+            opened = self._open_link(plan['serial'], link)
+            results.append({'package': app['package'], 'ok': opened['ok'], 'link': link,
+                            'output': opened.get('output'), 'error': opened.get('error')})
+        return {'device_id': device_id, 'ok': all(r['ok'] for r in results),
+                'bulk': False, 'results': results}
+
+    def _open_link(self, serial, link):
+        """Open one deep link on a device and report whether it was delivered."""
+        args = obtainium.adb_open_args(link)
+        try:
+            run = run_adb(['adb', '-s', serial, *args], timeout=60)
+        except (OSError, subprocess.SubprocessError) as exc:
+            return {'ok': False, 'error': str(exc)}
+        output = (run.stdout or run.stderr or '').strip()
+        return {'ok': run.returncode == 0 and 'Error' not in output, 'output': output[:500]}
+
+    def obtainium_status(self, device_ids):
+        """Report whether Obtainium is installed on each device, and its version."""
+        if isinstance(device_ids, str):
+            device_ids = [device_ids]
+        results = []
+        for device_id in device_ids:
+            with self.connect() as db:
+                device = db.execute('SELECT id, serial, connection FROM devices WHERE id=?',
+                                    (device_id,)).fetchone()
+            if not device:
+                results.append({'device_id': device_id, 'installed': None,
+                                'error': '端末が見つかりません。'})
+                continue
+            if device['connection'] != 'connected':
+                results.append({'device_id': device_id, 'installed': None,
+                                'error': '端末が接続されていません。'})
+                continue
             try:
-                run = run_adb(['adb', '-s', plan['serial'], *args], timeout=60)
-                output = (run.stdout or run.stderr or '').strip()
-                ok = run.returncode == 0 and 'Error' not in output
-                results.append({'package': app['package'], 'ok': ok, 'link': link,
-                                'output': output[:500]})
+                run = run_adb(['adb', '-s', device['serial'], 'shell', 'dumpsys',
+                               'package', obtainium.OBTAINIUM_PACKAGE], timeout=30)
             except (OSError, subprocess.SubprocessError) as exc:
-                results.append({'package': app['package'], 'ok': False, 'link': link,
-                                'error': str(exc)})
+                results.append({'device_id': device_id, 'installed': None, 'error': str(exc)})
+                continue
+            installed = f'Package [{obtainium.OBTAINIUM_PACKAGE}]' in run.stdout
+            version = None
+            if installed:
+                match = re.search(r'versionName=(\S+)', run.stdout)
+                version = match.group(1) if match else None
+            results.append({'device_id': device_id, 'serial': device['serial'],
+                            'installed': installed, 'version': version})
+        return {'devices': results}
+
+    def obtainium_install(self, device_ids, acknowledge=False, tag=None):
+        """Install Obtainium from its official release on each device.
+
+        Obtainium is an Android app, so every device needs its own copy. Doing
+        that by hand on each device is the step that makes the catalog workflow
+        feel like a chore, so this fetches the release asset for the device's
+        ABI, verifies its SHA-256, and installs it.
+
+        Installing an app writes to the device, so it needs an explicit
+        acknowledgement. A device that already has Obtainium is left alone
+        unless `reinstall` is requested.
+        """
+        if acknowledge is not True:
+            raise WardenError('Obtainiumのインストールには acknowledge が必要です。')
+        if isinstance(device_ids, str):
+            device_ids = [device_ids]
+        if not device_ids:
+            raise WardenError('端末を指定してください。')
+        release = obtainium.fetch_release()
+        assets = obtainium.release_assets(release)
+        results = []
+        for device_id in device_ids:
+            results.append(self._install_one(device_id, release, assets))
         with self.connect() as db:
             db.execute('BEGIN IMMEDIATE')
             db.execute('INSERT INTO audit VALUES(?,?,?,?)',
-                       (time.time(), 'obtainium_register', device_id,
-                        json.dumps({'packages': [r['package'] for r in results],
-                                    'ok': [r['ok'] for r in results]}, ensure_ascii=False)))
+                       (time.time(), 'obtainium_install', ','.join(device_ids),
+                        json.dumps({'tag': release.get('tag_name'),
+                                    'ok': [r.get('ok') for r in results]}, ensure_ascii=False)))
             db.commit()
-        return {'device_id': device_id, 'results': results}
+        return {'tag': release.get('tag_name'), 'devices': results}
+
+    def _install_one(self, device_id, release, assets):
+        with self.connect() as db:
+            device = db.execute('SELECT id, serial, connection FROM devices WHERE id=?',
+                                (device_id,)).fetchone()
+        if not device:
+            return {'device_id': device_id, 'ok': False, 'error': '端末が見つかりません。'}
+        if device['connection'] != 'connected':
+            return {'device_id': device_id, 'ok': False, 'error': '端末が接続されていません。'}
+        serial = device['serial']
+        try:
+            abi = run_adb(['adb', '-s', serial, 'shell', 'getprop', 'ro.product.cpu.abi'],
+                          timeout=30)
+        except (OSError, subprocess.SubprocessError) as exc:
+            return {'device_id': device_id, 'ok': False, 'error': str(exc)}
+        abi_name = (abi.stdout or '').strip()
+        asset_name = obtainium.choose_asset(abi_name)
+        asset = assets.get(asset_name)
+        if not asset or not asset.get('url'):
+            return {'device_id': device_id, 'ok': False,
+                    'error': f'リリースに {asset_name} がありません。'}
+        with tempfile.TemporaryDirectory() as folder:
+            local = Path(folder) / asset_name
+            try:
+                download = subprocess.run(['gh', 'release', 'download',
+                                           release['tag_name'],
+                                           '--repo', obtainium.OBTAINIUM_REPO,
+                                           '--pattern', asset_name,
+                                           '--dir', folder, '--clobber'],
+                                          capture_output=True, text=True, timeout=600,
+                                          creationflags=HIDDEN)
+            except (OSError, subprocess.SubprocessError) as exc:
+                return {'device_id': device_id, 'ok': False, 'error': str(exc)}
+            if download.returncode != 0 or not local.exists():
+                return {'device_id': device_id, 'ok': False,
+                        'error': 'APKをダウンロードできませんでした。'}
+            check = obtainium.verify_download(local, asset.get('digest'))
+            if not check['verified']:
+                # Never install an APK that does not match the published digest.
+                return {'device_id': device_id, 'ok': False, 'abi': abi_name,
+                        'asset': asset_name, 'error': check['reason']}
+            try:
+                install = run_adb(['adb', '-s', serial, 'install', '-r', str(local)],
+                                  timeout=600)
+            except (OSError, subprocess.SubprocessError) as exc:
+                return {'device_id': device_id, 'ok': False, 'error': str(exc)}
+        output = (install.stdout or install.stderr or '').strip()
+        ok = install.returncode == 0 and 'Success' in output
+        return {'device_id': device_id, 'ok': ok, 'abi': abi_name, 'asset': asset_name,
+                'digest': check.get('digest'), 'output': output[:500],
+                'hint': None if ok else install_hint(output)}
 
     def catalog_signatures(self, device_id, packages=None):
         """Read the signing certificate of each catalog app on one device.
