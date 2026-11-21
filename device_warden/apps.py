@@ -13,6 +13,9 @@ VERSION_CODE = re.compile(r'\bversionCode=(\d+)', re.IGNORECASE)
 FIRST_INSTALL = re.compile(r'\bfirstInstallTime=([0-9-]+ [0-9:]+)', re.IGNORECASE)
 LAST_UPDATE = re.compile(r'\blastUpdateTime=([0-9-]+ [0-9:]+)', re.IGNORECASE)
 LABEL_LINE = re.compile(r"^\s*application-label[^:]*:\s*(?P<label>.+)$")
+# `signatures=PackageSignatures{... signatures:[b2d95fc0], past signatures:[]}`
+# The first `signatures:[...]` is the current one; `past signatures` follows it.
+SIGNATURE = re.compile(r'\bsignatures:\[(?P<signatures>[^\]]*)\]', re.IGNORECASE)
 
 
 def user_packages(output):
@@ -75,3 +78,28 @@ def version_status(version_code, baseline):
     if version_code == baseline:
         return 'latest'
     return 'old' if version_code < baseline else 'newer'
+
+
+def signing_certificates(output):
+    """Return the signing certificate hashes from `dumpsys package <pkg>`.
+
+    Android prints short hashes here, which is enough to tell whether an
+    installed app was signed by the same key as a new build. An empty list means
+    the output did not contain a signature line, not that the app is unsigned.
+    """
+    for line in output.splitlines():
+        match = SIGNATURE.search(line)
+        if match:
+            return [part.strip() for part in match['signatures'].split(',') if part.strip()]
+    return []
+
+
+def signature_matches(installed, expected):
+    """Compare two certificate lists.
+
+    Returns None when either side is unknown: an unreadable signature must not
+    be reported as a mismatch, because that would block a legitimate update.
+    """
+    if not installed or not expected:
+        return None
+    return set(installed) == set(expected)
