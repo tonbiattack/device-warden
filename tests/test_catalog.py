@@ -75,6 +75,43 @@ class LinkTests(unittest.TestCase):
         self.assertIn('obtainium://add/https://github.com/o/r', args)
         self.assertEqual(args[-1], obtainium.OBTAINIUM_PACKAGE)
 
+    def test_repo_slug(self):
+        self.assertEqual(obtainium.repo_slug('https://github.com/owner/repo/'), 'owner/repo')
+
+
+class ReleaseCheckTests(unittest.TestCase):
+    """A repository without a release cannot be registered; say so up front."""
+
+    def runner(self, stdout, returncode=0):
+        def run(command, **kwargs):
+            return type('Done', (), {'returncode': returncode, 'stdout': stdout, 'stderr': ''})()
+        return run
+
+    def test_repository_with_a_release(self):
+        result = obtainium.check_releases('https://github.com/owner/repo',
+                                          runner=self.runner('[{"tagName": "v1.0.0"}]'))
+        self.assertTrue(result['checked'])
+        self.assertTrue(result['has_release'])
+        self.assertEqual(result['tag'], 'v1.0.0')
+
+    def test_repository_without_a_release_is_reported(self):
+        result = obtainium.check_releases('https://github.com/owner/repo',
+                                          runner=self.runner('[]'))
+        self.assertTrue(result['checked'])
+        self.assertFalse(result['has_release'])
+        self.assertIn('リリースがありません', result['reason'])
+
+    def test_gh_failure_is_unknown_not_a_mismatch(self):
+        result = obtainium.check_releases('https://github.com/owner/repo',
+                                          runner=self.runner('', returncode=1))
+        self.assertFalse(result['checked'])
+
+    def test_missing_gh_is_unknown(self):
+        def run(command, **kwargs):
+            raise OSError('gh not found')
+        result = obtainium.check_releases('https://github.com/owner/repo', runner=run)
+        self.assertFalse(result['checked'])
+
 
 class CatalogStoreTests(unittest.TestCase):
     def setUp(self):
@@ -144,7 +181,9 @@ class CatalogStoreTests(unittest.TestCase):
     def test_register_opens_one_link_per_app(self):
         self.store.catalog_add('com.example.app', 'https://github.com/owner/repo')
         self.store.catalog_add('com.other.app', 'https://github.com/owner/other')
-        with patch('device_warden.store.run_adb') as run_adb:
+        with patch('device_warden.store.run_adb') as run_adb, \
+             patch('device_warden.obtainium.check_releases',
+                   return_value={'checked': True, 'has_release': True, 'tag': 'v1'}):
             run_adb.return_value = type('Done', (), {
                 'returncode': 0, 'stdout': 'Starting: Intent', 'stderr': ''})()
             result = self.store.catalog_register(self.device, acknowledge=True)
@@ -155,6 +194,29 @@ class CatalogStoreTests(unittest.TestCase):
             command = call.args[0]
             self.assertEqual(command[:2], ['adb', '-s'])
             self.assertIn('obtainium://add/', ' '.join(command))
+
+    def test_register_skips_a_repository_without_releases(self):
+        """Obtainium's Add screen does nothing for such a repo; do not pretend it worked."""
+        self.store.catalog_add('com.example.app', 'https://github.com/owner/repo')
+        with patch('device_warden.store.run_adb') as run_adb, \
+             patch('device_warden.obtainium.check_releases',
+                   return_value={'checked': True, 'has_release': False,
+                                 'reason': 'リリースがありません'}):
+            result = self.store.catalog_register(self.device, acknowledge=True)
+        self.assertFalse(result['results'][0]['ok'])
+        self.assertTrue(result['results'][0]['skipped'])
+        run_adb.assert_not_called()
+
+    def test_register_proceeds_when_the_release_check_is_unknown(self):
+        """A failed check must not block a registration that might work."""
+        self.store.catalog_add('com.example.app', 'https://github.com/owner/repo')
+        with patch('device_warden.store.run_adb') as run_adb, \
+             patch('device_warden.obtainium.check_releases',
+                   return_value={'checked': False, 'reason': 'gh が失敗'}):
+            run_adb.return_value = type('Done', (), {
+                'returncode': 0, 'stdout': '', 'stderr': ''})()
+            result = self.store.catalog_register(self.device, acknowledge=True)
+        self.assertTrue(result['results'][0]['ok'])
 
     def test_register_reports_a_failure_per_app(self):
         self.store.catalog_add('com.example.app', 'https://github.com/owner/repo')
@@ -185,34 +247,67 @@ class CatalogStoreTests(unittest.TestCase):
         dump = ('Packages:\n  Package [com.example.app] (abc):\n'
                 '    signatures=PackageSignatures{d534165 version:3, '
                 'signatures:[b2d95fc0], past signatures:[]}\n')
-        with patch('device_warden.store.run_adb') as run_adb:
-            run_adb.return_value = type('Done', (), {
-                'returncode': 0, 'stdout': dump, 'stderr': ''})()
+        apksigner = ('Signer #1 certificate DN: C=US, O=Android, CN=Android Debug\n'
+                     'Signer #1 certificate SHA-256 digest: '
+                     '3a29d6024957f48d5433b9003de747dc3ebcee10c1ad3eeaf14a4756840d6363\n')
+
+        def adb(command, **kwargs):
+            if 'pm' in command:
+                return type('Done', (), {'returncode': 0,
+                                         'stdout': 'package:/data/app/base.apk\n', 'stderr': ''})()
+            if 'dumpsys' in command:
+                return type('Done', (), {'returncode': 0, 'stdout': dump, 'stderr': ''})()
+            if 'pull' in command:
+                # `_apk_digest` checks that the pull produced a file.
+                Path(command[-1]).write_bytes(b'fake apk')
+                return type('Done', (), {'returncode': 0, 'stdout': '', 'stderr': ''})()
+            return type('Done', (), {'returncode': 0, 'stdout': '', 'stderr': ''})()
+
+        with patch('device_warden.store.run_adb', side_effect=adb), \
+             patch('device_warden.store.shutil.which', return_value='apksigner'), \
+             patch('device_warden.store.subprocess.run') as host_run:
+            host_run.return_value = type('Done', (), {
+                'returncode': 0, 'stdout': apksigner, 'stderr': ''})()
             result = self.store.catalog_signatures(self.device)
         self.assertTrue(result['results'][0]['installed'])
+        # The digest must be the SHA-256 Obtainium shows, not the dumpsys short hash.
+        self.assertEqual(result['results'][0]['digest'],
+                         '3a29d6024957f48d5433b9003de747dc3ebcee10c1ad3eeaf14a4756840d6363')
         self.assertEqual(result['results'][0]['signatures'], ['b2d95fc0'])
 
     def test_signatures_report_an_uninstalled_app(self):
         self.store.catalog_add('com.example.app', 'https://github.com/owner/repo')
         with patch('device_warden.store.run_adb') as run_adb:
             run_adb.return_value = type('Done', (), {
-                'returncode': 0, 'stdout': 'Unable to find package: com.example.app',
+                'returncode': 1, 'stdout': 'Unable to find package: com.example.app',
                 'stderr': ''})()
             result = self.store.catalog_signatures(self.device)
         self.assertFalse(result['results'][0]['installed'])
-        self.assertEqual(result['results'][0]['signatures'], [])
+        self.assertIsNone(result['results'][0]['digest'])
 
     def test_signatures_never_uninstall_or_clear_data(self):
         """A mismatch is reported, never repaired: no uninstall command is run."""
         self.store.catalog_add('com.example.app', 'https://github.com/owner/repo')
-        with patch('device_warden.store.run_adb') as run_adb:
+        with patch('device_warden.store.run_adb') as run_adb, \
+             patch('device_warden.store.shutil.which', return_value=None), \
+             patch.dict(os.environ, {'ANDROID_HOME': '', 'ANDROID_SDK_ROOT': ''}):
             run_adb.return_value = type('Done', (), {
-                'returncode': 0, 'stdout': '', 'stderr': ''})()
+                'returncode': 0, 'stdout': 'package:/data/app/base.apk', 'stderr': ''})()
             self.store.catalog_signatures(self.device)
         for call in run_adb.call_args_list:
             command = ' '.join(call.args[0])
             self.assertNotIn('uninstall', command)
             self.assertNotIn('pm clear', command)
+
+    def test_missing_apksigner_reports_unknown_not_a_mismatch(self):
+        self.store.catalog_add('com.example.app', 'https://github.com/owner/repo')
+        with patch('device_warden.store.run_adb') as run_adb, \
+             patch('device_warden.store.shutil.which', return_value=None), \
+             patch.dict(os.environ, {'ANDROID_HOME': '', 'ANDROID_SDK_ROOT': ''}):
+            run_adb.return_value = type('Done', (), {
+                'returncode': 0, 'stdout': 'package:/data/app/base.apk', 'stderr': ''})()
+            result = self.store.catalog_signatures(self.device)
+        self.assertIsNone(result['results'][0]['digest'])
 
 
 class CatalogBrokerTests(unittest.TestCase):

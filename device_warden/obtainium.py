@@ -54,6 +54,41 @@ def validate_package(package):
     return package
 
 
+def repo_slug(repo_url):
+    """Return `owner/repo` for a GitHub repository URL."""
+    match = GITHUB_REPO.match(normalize_repo_url(repo_url))
+    return f"{match['owner']}/{match['repo']}"
+
+
+def check_releases(repo_url, runner=None):
+    """Report whether the repository has a release Obtainium could install.
+
+    Obtainium resolves an app from its releases; a repository with none cannot
+    be registered, and the Add screen simply does nothing. Checking here turns
+    that silent failure into a clear message before anything reaches a device.
+    """
+    import json
+    import subprocess
+
+    slug = repo_slug(repo_url)
+    runner = runner or subprocess.run
+    try:
+        result = runner(['gh', 'release', 'list', '--repo', slug, '--limit', '1',
+                         '--json', 'tagName'], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {'checked': False, 'reason': f'リリースを確認できませんでした: {exc}'}
+    if result.returncode != 0:
+        return {'checked': False, 'reason': 'リリースを確認できませんでした（gh が失敗）。'}
+    try:
+        releases = json.loads(result.stdout or '[]')
+    except ValueError:
+        return {'checked': False, 'reason': 'リリースの応答を解釈できませんでした。'}
+    if not releases:
+        return {'checked': True, 'has_release': False,
+                'reason': f'{slug} にはリリースがありません。Obtainiumは登録できません。'}
+    return {'checked': True, 'has_release': True, 'tag': releases[0].get('tagName')}
+
+
 def add_link(repo_url):
     """Deep link that adds one app, or opens it when already registered."""
     return f'obtainium://add/{normalize_repo_url(repo_url)}'
