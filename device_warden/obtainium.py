@@ -102,7 +102,7 @@ def refresh_link(app_id=None):
 
 
 def import_payload(entries):
-    """Build the JSON Obtainium's `apps` import expects.
+    """Build the app list Obtainium's `apps` import expects.
 
     `App.fromJson` requires `id`, `url`, `author`, `name` and
     `additionalSettings`; the rest have defaults. `id` is the package name,
@@ -119,17 +119,24 @@ def import_payload(entries):
             'name': entry.get('label') or package,
             'additionalSettings': '{}',
         })
-    return {'apps': apps}
+    return apps
 
 
 def import_link(entries):
-    """Deep link that imports several apps at once."""
-    payload = import_payload(entries)
-    if not payload['apps']:
+    """Deep link that imports several apps at once.
+
+    The `apps` action wraps the decoded JSON itself: `home.dart` builds
+    `{'apps': parsedData}` and passes that to `import`. The link must therefore
+    carry the bare list, not an object with an `apps` key, or the cast to
+    `List<dynamic>` fails with "type '_Map<String, dynamic>' is not a subtype
+    of type 'List<dynamic>'".
+    """
+    apps = import_payload(entries)
+    if not apps:
         raise CatalogError('登録するアプリがありません。')
     # The JSON is a path segment, so it must be percent-encoded.
     from urllib.parse import quote
-    return 'obtainium://apps/' + quote(json.dumps(payload, ensure_ascii=False), safe='')
+    return 'obtainium://apps/' + quote(json.dumps(apps, ensure_ascii=False), safe='')
 
 
 def adb_open_args(link, package=OBTAINIUM_PACKAGE):
