@@ -37,6 +37,38 @@ def apps_command(parser, args):
     return 0
 
 
+def catalog_command(parser, args):
+    """Handle `device-warden catalog ...`; Obtainium does the fetching."""
+    action = args.pop('catalog_command')
+    if action == 'list':
+        result = call('catalog')
+    elif action == 'add':
+        result = call('catalog-add', **args)
+    elif action == 'remove':
+        result = call('catalog-remove', **args)
+    elif action == 'links':
+        result = call('catalog-links', **args)
+    elif action == 'import-link':
+        result = call('catalog-import-link', **args)
+    elif action == 'signatures':
+        result = call('catalog-signatures', **args)
+    else:
+        if not args.pop('yes'):
+            # Opening Obtainium writes to the device, so show the plan first.
+            plan = call('catalog-links', device_id=args['device_id'],
+                        packages=args.get('packages'))
+            print(json.dumps({'device': plan['serial'], 'connection': plan['connection'],
+                              'apps': [{'package': app['package'], 'url': app['url']}
+                                       for app in plan['apps']]},
+                             ensure_ascii=False, indent=2))
+            print('実際に登録するには --yes を付けてください。', file=sys.stderr)
+            return 2
+        args['acknowledge'] = True
+        result = call('catalog-register', **args)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
 def keep_alive(lease_id, interval=30):
     """Refresh a lease while a child process runs.
 
@@ -197,6 +229,27 @@ def main():
     install.add_argument('apk_path', metavar='apk')
     install.add_argument('--device', dest='device_ids', action='append')
     install.add_argument('--yes', action='store_true', help='インストールを実行する')
+    catalog = sub.add_parser('catalog', help='Obtainiumで配布するアプリのカタログ')
+    catalog_sub = catalog.add_subparsers(dest='catalog_command', required=True)
+    catalog_sub.add_parser('list')
+    catalog_add = catalog_sub.add_parser('add', help='パッケージとGitHubリポジトリを登録')
+    catalog_add.add_argument('package')
+    catalog_add.add_argument('url')
+    catalog_add.add_argument('--author')
+    catalog_remove = catalog_sub.add_parser('remove')
+    catalog_remove.add_argument('package')
+    catalog_links = catalog_sub.add_parser('links', help='Obtainiumのディープリンクを表示')
+    catalog_links.add_argument('device_id')
+    catalog_links.add_argument('--package', dest='packages', action='append')
+    catalog_import = catalog_sub.add_parser('import-link', help='一括インポート用リンクを表示')
+    catalog_import.add_argument('--package', dest='packages', action='append')
+    catalog_register = catalog_sub.add_parser('register', help='端末のObtainiumで登録画面を開く')
+    catalog_register.add_argument('device_id')
+    catalog_register.add_argument('--package', dest='packages', action='append')
+    catalog_register.add_argument('--yes', action='store_true', help='実際に端末で開く')
+    catalog_signatures = catalog_sub.add_parser('signatures', help='端末の署名証明書を確認')
+    catalog_signatures.add_argument('device_id')
+    catalog_signatures.add_argument('--package', dest='packages', action='append')
     args = vars(parser.parse_args(protect_lease_id(sys.argv[1:])))
     command = args.pop('command')
     try:
@@ -233,6 +286,8 @@ def main():
             raise WardenError('--resume には --session-id が必要です。')
         if command == 'apps':
             return apps_command(parser, args)
+        if command == 'catalog':
+            return catalog_command(parser, args)
         result = call('list' if command == 'status' else command, **args)
         print(json.dumps(result, ensure_ascii=False, indent=2))
     except WardenError as exc:

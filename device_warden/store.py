@@ -7,7 +7,8 @@ import time
 import uuid
 from pathlib import Path
 
-from .apps import package_details, user_packages, version_status
+from .apps import package_details, signing_certificates, user_packages, version_status
+from . import obtainium
 
 # The Broker runs without a console, but adb.exe is a console program and would
 # otherwise flash a new window every time it is invoked.
@@ -132,6 +133,9 @@ class Store:
               version_name TEXT, version_code INTEGER, first_install_time TEXT,
               last_update_time TEXT, scanned_at REAL NOT NULL, error TEXT,
               PRIMARY KEY (device_id, package));
+            CREATE TABLE IF NOT EXISTS app_catalog (
+              package TEXT PRIMARY KEY, url TEXT NOT NULL, author TEXT,
+              added_at REAL NOT NULL);
             """)
             # Older databases predate the friendly-name columns.
             columns = {row['name'] for row in db.execute('PRAGMA table_info(devices)')}
@@ -552,6 +556,154 @@ class Store:
         with self.connect() as db:
             return [dict(row) for row in db.execute(
                 'SELECT package, label, added_at FROM tracked_apps ORDER BY package')]
+
+    # --- Obtainium catalog ----------------------------------------------------
+    #
+    # Only the release source is stored. Obtainium fetches and installs updates
+    # itself, so Device Warden never downloads an APK for this path.
+
+    def catalog(self):
+        with self.connect() as db:
+            return [dict(row) for row in db.execute(
+                '''SELECT c.package, c.url, c.author, c.added_at, t.label
+                   FROM app_catalog c LEFT JOIN tracked_apps t ON t.package=c.package
+                   ORDER BY COALESCE(t.label, c.package)''')]
+
+    def catalog_add(self, package, url, author=None):
+        """Register a release source for a package, and track it for version scans."""
+        package = obtainium.validate_package(package)
+        url = obtainium.normalize_repo_url(url)
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            db.execute('''INSERT INTO app_catalog(package, url, author, added_at) VALUES(?,?,?,?)
+                ON CONFLICT(package) DO UPDATE SET url=excluded.url,
+                author=COALESCE(excluded.author, app_catalog.author)''',
+                       (package, url, author, time.time()))
+            # A catalog entry is also a tracked app: the matrix should show its
+            # installed version without a second registration step.
+            db.execute('''INSERT INTO tracked_apps(package, label, added_at) VALUES(?,?,?)
+                ON CONFLICT(package) DO NOTHING''', (package, None, time.time()))
+            db.commit()
+        return {'package': package, 'url': url}
+
+    def catalog_remove(self, package):
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            if not db.execute('DELETE FROM app_catalog WHERE package=?', (package,)).rowcount:
+                raise WardenError('カタログに登録されていません。')
+            db.commit()
+
+    def catalog_links(self, device_id, packages=None):
+        """Build the Obtainium links for the requested packages.
+
+        The device is checked first: a link that cannot be opened is worse than
+        an error, because the operator would think the registration happened.
+        """
+        with self.connect() as db:
+            device = db.execute('SELECT id, serial, connection FROM devices WHERE id=?',
+                                (device_id,)).fetchone()
+            if not device:
+                raise WardenError('端末が見つかりません。')
+            query = '''SELECT c.package, c.url, c.author, t.label FROM app_catalog c
+                LEFT JOIN tracked_apps t ON t.package=c.package'''
+            params = ()
+            if packages:
+                query += ' WHERE c.package IN (%s)' % ','.join('?' * len(packages))
+                params = tuple(packages)
+            rows = [dict(row) for row in db.execute(query + ' ORDER BY c.package', params)]
+        if not rows:
+            raise WardenError('カタログにアプリが登録されていません。')
+        if packages:
+            missing = set(packages) - {row['package'] for row in rows}
+            if missing:
+                raise WardenError('カタログにないアプリです: ' + ', '.join(sorted(missing)))
+        return {'device_id': device['id'], 'serial': device['serial'],
+                'connection': device['connection'], 'apps': rows}
+
+    def catalog_register(self, device_id, packages=None, acknowledge=False):
+        """Open Obtainium's add link for each app on the device.
+
+        Registration writes to the device's Obtainium database, so it needs an
+        explicit acknowledgement. Each app is opened separately: Obtainium's
+        `add` link opens the existing entry when the app is already registered,
+        which is how duplicates are avoided.
+        """
+        if acknowledge is not True:
+            raise WardenError('Obtainiumへの登録には acknowledge が必要です。')
+        plan = self.catalog_links(device_id, packages)
+        if plan['connection'] != 'connected':
+            raise WardenError('端末が接続されていません。')
+        results = []
+        for app in plan['apps']:
+            link = obtainium.add_link(app['url'])
+            args = obtainium.adb_open_args(link)
+            try:
+                run = run_adb(['adb', '-s', plan['serial'], *args], timeout=60)
+                output = (run.stdout or run.stderr or '').strip()
+                ok = run.returncode == 0 and 'Error' not in output
+                results.append({'package': app['package'], 'ok': ok, 'link': link,
+                                'output': output[:500]})
+            except (OSError, subprocess.SubprocessError) as exc:
+                results.append({'package': app['package'], 'ok': False, 'link': link,
+                                'error': str(exc)})
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            db.execute('INSERT INTO audit VALUES(?,?,?,?)',
+                       (time.time(), 'obtainium_register', device_id,
+                        json.dumps({'packages': [r['package'] for r in results],
+                                    'ok': [r['ok'] for r in results]}, ensure_ascii=False)))
+            db.commit()
+        return {'device_id': device_id, 'results': results}
+
+    def catalog_signatures(self, device_id, packages=None):
+        """Read the signing certificate of each catalog app on one device.
+
+        Obtainium installs an update only when the signature matches the
+        installed app. Reporting the current certificate lets the operator see a
+        mismatch before an update fails, and nothing here uninstalls or clears
+        data: a mismatch is reported, never repaired automatically.
+        """
+        plan = self.catalog_links(device_id, packages)
+        if plan['connection'] != 'connected':
+            raise WardenError('端末が接続されていません。')
+        results = []
+        for app in plan['apps']:
+            try:
+                run = run_adb(['adb', '-s', plan['serial'], 'shell', 'dumpsys',
+                               'package', app['package']], timeout=30)
+                if run.returncode != 0:
+                    results.append({'package': app['package'], 'installed': None,
+                                    'signatures': [], 'error': 'dumpsysが失敗しました。'})
+                    continue
+                # `dumpsys package <missing>` still prints the package name in
+                # "Unable to find package: <name>", so look for the header that
+                # only an installed package produces.
+                installed = f'Package [{app["package"]}]' in run.stdout
+                certificates = signing_certificates(run.stdout) if installed else []
+                results.append({'package': app['package'], 'installed': installed,
+                                'signatures': certificates})
+            except (OSError, subprocess.SubprocessError) as exc:
+                results.append({'package': app['package'], 'installed': None,
+                                'signatures': [], 'error': str(exc)})
+        return {'device_id': device_id, 'results': results}
+
+    def catalog_import_link(self, packages=None):
+        """Return one link that imports every catalog entry at once."""
+        plan = self.catalog_links_for_import(packages)
+        return {'link': obtainium.import_link(plan), 'count': len(plan)}
+
+    def catalog_links_for_import(self, packages=None):
+        with self.connect() as db:
+            query = '''SELECT c.package, c.url, c.author, t.label FROM app_catalog c
+                LEFT JOIN tracked_apps t ON t.package=c.package'''
+            params = ()
+            if packages:
+                query += ' WHERE c.package IN (%s)' % ','.join('?' * len(packages))
+                params = tuple(packages)
+            rows = [dict(row) for row in db.execute(query + ' ORDER BY c.package', params)]
+        if not rows:
+            raise WardenError('カタログにアプリが登録されていません。')
+        return rows
 
     def scan_apps(self, device_id=None):
         """Collect versions of tracked apps per connected device.

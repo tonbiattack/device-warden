@@ -313,6 +313,44 @@ device-warden apps install app-debug.apk          # 対象端末を確認する�
 
 取得と更新は分離しており、インストールは明示操作でのみ実行します。アンインストールやデータ消去は対象外です。
 
+## Obtainium との連携
+
+[Obtainium](https://github.com/ImranR98/Obtainium) は、GitHub Releases などから直接アプリを取得・更新するAndroidアプリです。Device Warden は**取得も更新も再実装しません**。どのパッケージがどのリポジトリ由来かというカタログだけを持ち、Obtainium が解釈するディープリンクに変換します。
+
+```powershell
+device-warden catalog add com.example.app https://github.com/owner/repo
+device-warden catalog list
+device-warden catalog links <device_id>              # 開くリンクを確認するだけ
+device-warden catalog register <device_id> --yes     # 端末のObtainiumで登録画面を開く
+device-warden catalog signatures <device_id>         # 端末の署名証明書を確認
+device-warden catalog import-link                    # 一括インポート用リンク
+```
+
+カタログに登録すると、そのパッケージは「アプリ」タブのバージョン管理にも自動で加わります。
+
+### リンクの形式
+
+Obtainium のソース（`lib/pages/home.dart`）が解釈する形式に合わせています。
+
+| リンク | 用途 |
+| --- | --- |
+| `obtainium://add/<url>` | 1件登録。**既に登録済みなら既存の項目を開く**ので重複しない |
+| `obtainium://apps/<json>` | 複数件を一括インポート |
+| `obtainium://refresh[?id=<id>]` | 更新確認 |
+
+`register` は1件ずつ `add` を開きます。重複の判定は Obtainium 側に任せており、Device Warden は登録済みかどうかを推測しません。
+
+### 安全側の扱い
+
+- **登録は明示操作のみ。** `--yes` を付けない場合は対象端末とアプリを表示して終わります。
+- **未接続の端末では実行しません。** リンクを開けないまま「登録した」と誤解させないためです。
+- **署名不一致を自動修復しません。** `catalog signatures` は端末の署名証明書を表示するだけで、アンインストールもデータ消去も行いません。Obtainium が更新を拒否した場合は、同じ鍵で署名したAPKを用意してください。
+- **トークンは保存しません。** カタログに入るのはパッケージ名とリポジトリURLだけです。プライベートリポジトリのトークンは Obtainium 側で管理してください。
+
+### 本家 Obtainium との共存
+
+ディープリンクは `dev.imranr.obtainium` 宛てに送ります。F-Droid 版（`dev.imranr.obtainium.fdroid`）を使っている場合は、`device_warden/obtainium.py` の `OBTAINIUM_PACKAGE` を変更してください。本家 Obtainium の設定・データには触れないため、Obtainium 側の更新を妨げません。
+
 ## テスト
 
 ```powershell
@@ -320,7 +358,7 @@ python -m unittest discover -s tests -v
 node integrations/opencode/test.mjs        # Node.js 24 以上
 ```
 
-並列claim、ポリシー強制、切断・再接続時の所有者保持、heartbeat停止、ADB対象の固定、Broker認証、監査ログ、アイコンの状態優先度、自動起動の登録・解除、アプリ取得の端末別失敗分離とversionCode比較を網羅しています。`tests/test_broker_integration.py` は実際のBrokerを一時ポートで起動し、CLIをHTTP越しに動かします。CLIとBrokerの引数名の食い違いはモックでは見つからないためです。`tests/test_mcp.py` はMCPサーバのプロトコルとリース保持を検証します。README用のスクリーンショットは `python scripts/capture-screenshot.py` と `python scripts/capture-apps-screenshot.py` で、架空のデータから再生成できます。
+並列claim、ポリシー強制、切断・再接続時の所有者保持、heartbeat停止、ADB対象の固定、Broker認証、監査ログ、アイコンの状態優先度、自動起動の登録・解除、アプリ取得の端末別失敗分離とversionCode比較を網羅しています。`tests/test_broker_integration.py` は実際のBrokerを一時ポートで起動し、CLIをHTTP越しに動かします。CLIとBrokerの引数名の食い違いはモックでは見つからないためです。`tests/test_mcp.py` はMCPサーバのプロトコルとリース保持を、`tests/test_catalog.py` はObtainiumのリンク形式と署名確認を検証します。README用のスクリーンショットは `python scripts/capture-screenshot.py` と `python scripts/capture-apps-screenshot.py` で、架空のデータから再生成できます。
 
 ## 制限
 
