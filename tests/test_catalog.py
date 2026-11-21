@@ -47,9 +47,9 @@ class LinkTests(unittest.TestCase):
                 obtainium.validate_package(package)
 
     def test_import_payload_has_the_fields_obtainium_requires(self):
-        payload = obtainium.import_payload([
+        apps = obtainium.import_payload([
             {'package': 'com.example.app', 'url': 'https://github.com/owner/repo', 'label': 'Example'}])
-        app = payload['apps'][0]
+        app = apps[0]
         # App.fromJson requires id, url, author, name and additionalSettings.
         for field in ('id', 'url', 'author', 'name', 'additionalSettings'):
             self.assertIn(field, app)
@@ -58,12 +58,14 @@ class LinkTests(unittest.TestCase):
         self.assertEqual(app['author'], 'owner')
         self.assertEqual(json.loads(app['additionalSettings']), {})
 
-    def test_import_link_is_percent_encoded(self):
+    def test_import_link_carries_a_bare_list(self):
+        """Obtainium wraps the decoded JSON itself; an `apps` key breaks the cast."""
         link = obtainium.import_link([{'package': 'com.example.app',
                                        'url': 'https://github.com/owner/repo'}])
         self.assertTrue(link.startswith('obtainium://apps/'))
         decoded = json.loads(unquote(link[len('obtainium://apps/'):]))
-        self.assertEqual(decoded['apps'][0]['id'], 'com.example.app')
+        self.assertIsInstance(decoded, list)
+        self.assertEqual(decoded[0]['id'], 'com.example.app')
 
     def test_import_link_rejects_an_empty_catalog(self):
         with self.assertRaises(obtainium.CatalogError):
