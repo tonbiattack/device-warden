@@ -1,13 +1,16 @@
 import json
 import os
 import secrets
+import shutil
 import sqlite3
 import subprocess
+import tempfile
 import time
 import uuid
 from pathlib import Path
 
-from .apps import package_details, signing_certificates, user_packages, version_status
+from .apps import (certificate_digest, package_details, signing_certificates,
+                   user_packages, version_status)
 from . import obtainium
 
 # The Broker runs without a console, but adb.exe is a console program and would
@@ -627,6 +630,10 @@ class Store:
         explicit acknowledgement. Each app is opened separately: Obtainium's
         `add` link opens the existing entry when the app is already registered,
         which is how duplicates are avoided.
+
+        A repository without a release is reported before anything is opened:
+        Obtainium's Add screen does nothing for such a repository, so opening it
+        would look like a successful registration that never happened.
         """
         if acknowledge is not True:
             raise WardenError('Obtainiumへの登録には acknowledge が必要です。')
@@ -635,6 +642,11 @@ class Store:
             raise WardenError('端末が接続されていません。')
         results = []
         for app in plan['apps']:
+            release = obtainium.check_releases(app['url'])
+            if release.get('checked') and not release.get('has_release'):
+                results.append({'package': app['package'], 'ok': False,
+                                'skipped': True, 'reason': release['reason']})
+                continue
             link = obtainium.add_link(app['url'])
             args = obtainium.adb_open_args(link)
             try:
@@ -659,9 +671,13 @@ class Store:
         """Read the signing certificate of each catalog app on one device.
 
         Obtainium installs an update only when the signature matches the
-        installed app. Reporting the current certificate lets the operator see a
-        mismatch before an update fails, and nothing here uninstalls or clears
-        data: a mismatch is reported, never repaired automatically.
+        installed app, and it shows the certificate's SHA-256 digest. The
+        `dumpsys` short hash is a different value, so the digest is read from
+        the installed APK with apksigner; that is the only value comparable
+        with what Obtainium displays.
+
+        Nothing here uninstalls or clears data: a mismatch is reported, never
+        repaired automatically.
         """
         plan = self.catalog_links(device_id, packages)
         if plan['connection'] != 'connected':
@@ -669,23 +685,52 @@ class Store:
         results = []
         for app in plan['apps']:
             try:
-                run = run_adb(['adb', '-s', plan['serial'], 'shell', 'dumpsys',
-                               'package', app['package']], timeout=30)
-                if run.returncode != 0:
-                    results.append({'package': app['package'], 'installed': None,
-                                    'signatures': [], 'error': 'dumpsysが失敗しました。'})
+                path = run_adb(['adb', '-s', plan['serial'], 'shell', 'pm', 'path',
+                                app['package']], timeout=30)
+                if path.returncode != 0 or 'package:' not in path.stdout:
+                    results.append({'package': app['package'], 'installed': False,
+                                    'digest': None, 'signatures': []})
                     continue
-                # `dumpsys package <missing>` still prints the package name in
-                # "Unable to find package: <name>", so look for the header that
-                # only an installed package produces.
-                installed = f'Package [{app["package"]}]' in run.stdout
-                certificates = signing_certificates(run.stdout) if installed else []
-                results.append({'package': app['package'], 'installed': installed,
-                                'signatures': certificates})
+                apk_path = path.stdout.strip().split('package:', 1)[1].splitlines()[0].strip()
+                dump = run_adb(['adb', '-s', plan['serial'], 'shell', 'dumpsys',
+                                'package', app['package']], timeout=30)
+                short = signing_certificates(dump.stdout) if dump.returncode == 0 else []
+                digest = self._apk_digest(plan['serial'], apk_path)
+                results.append({'package': app['package'], 'installed': True,
+                                'digest': digest, 'signatures': short})
             except (OSError, subprocess.SubprocessError) as exc:
                 results.append({'package': app['package'], 'installed': None,
-                                'signatures': [], 'error': str(exc)})
+                                'digest': None, 'signatures': [], 'error': str(exc)})
         return {'device_id': device_id, 'results': results}
+
+    def _apk_digest(self, serial, apk_path):
+        """Pull the installed APK and read its certificate digest.
+
+        apksigner runs on the host, so the APK is copied out of the device. A
+        missing apksigner is reported as unknown rather than as a mismatch.
+        """
+        apksigner = shutil.which('apksigner')
+        if not apksigner:
+            sdk = os.environ.get('ANDROID_HOME') or os.environ.get('ANDROID_SDK_ROOT')
+            if sdk:
+                candidates = sorted(Path(sdk, 'build-tools').glob('*/apksigner.bat'))
+                apksigner = str(candidates[-1]) if candidates else None
+        if not apksigner:
+            return None
+        with tempfile.TemporaryDirectory() as folder:
+            local = Path(folder) / 'base.apk'
+            pulled = run_adb(['adb', '-s', serial, 'pull', apk_path, str(local)], timeout=300)
+            if pulled.returncode != 0 or not local.exists():
+                return None
+            try:
+                verified = subprocess.run([apksigner, 'verify', '--print-certs', str(local)],
+                                          capture_output=True, text=True, timeout=120,
+                                          creationflags=HIDDEN)
+            except (OSError, subprocess.SubprocessError):
+                return None
+            if verified.returncode != 0:
+                return None
+            return certificate_digest(verified.stdout)
 
     def catalog_import_link(self, packages=None):
         """Return one link that imports every catalog entry at once."""

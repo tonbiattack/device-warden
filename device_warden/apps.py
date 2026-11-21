@@ -16,6 +16,8 @@ LABEL_LINE = re.compile(r"^\s*application-label[^:]*:\s*(?P<label>.+)$")
 # `signatures=PackageSignatures{... signatures:[b2d95fc0], past signatures:[]}`
 # The first `signatures:[...]` is the current one; `past signatures` follows it.
 SIGNATURE = re.compile(r'\bsignatures:\[(?P<signatures>[^\]]*)\]', re.IGNORECASE)
+# `Signer #1 certificate SHA-256 digest: 3a29d602...` from apksigner.
+CERT_DIGEST = re.compile(r'certificate SHA-256 digest:\s*(?P<digest>[0-9a-fA-F:]+)')
 
 
 def user_packages(output):
@@ -81,17 +83,32 @@ def version_status(version_code, baseline):
 
 
 def signing_certificates(output):
-    """Return the signing certificate hashes from `dumpsys package <pkg>`.
+    """Return the short signature hashes from `dumpsys package <pkg>`.
 
-    Android prints short hashes here, which is enough to tell whether an
-    installed app was signed by the same key as a new build. An empty list means
-    the output did not contain a signature line, not that the app is unsigned.
+    These are Android's internal package-signature hashes, not the certificate
+    digest. They are stable per signing key, so they can tell two installs of
+    the same app apart, but they do NOT match the SHA-256 digest Obtainium
+    shows. Use `certificate_digest` when the value must be compared with
+    Obtainium or apksigner.
     """
     for line in output.splitlines():
         match = SIGNATURE.search(line)
         if match:
             return [part.strip() for part in match['signatures'].split(',') if part.strip()]
     return []
+
+
+def certificate_digest(apksigner_output):
+    """Read the SHA-256 certificate digest from `apksigner verify --print-certs`.
+
+    This is the value Obtainium displays as "Certificate Hash", so it is the
+    only one that can be compared against what the user sees there.
+    """
+    for line in apksigner_output.splitlines():
+        match = CERT_DIGEST.search(line)
+        if match:
+            return match['digest'].replace(':', '').lower()
+    return None
 
 
 def signature_matches(installed, expected):
