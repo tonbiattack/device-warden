@@ -19,7 +19,8 @@ class MsixGuardTests(unittest.TestCase):
         root = ET.parse(ROOT / 'msix' / 'AppxManifest.xml').getroot()
         apps = root.findall('.//*[@Executable]')
         self.assertTrue(apps)
-        self.assertTrue(all(app.attrib['Executable'] == 'DeviceWardenMsixDev.exe' for app in apps))
+        expected = 'DeviceWardenMsixDev\\DeviceWardenMsixDev.exe'
+        self.assertTrue(all(app.attrib['Executable'] == expected for app in apps))
         self.assertIn('.Dev', root.find('{*}Identity').attrib['Name'])
         startup = root.find('.//{*}StartupTask')
         self.assertEqual(startup.attrib['Enabled'], 'false')

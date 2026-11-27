@@ -17,12 +17,12 @@
   </Dependencies>
   <Resources><Resource Language="ja-jp" /></Resources>
   <Applications>
-    <Application Id="App" Executable="DeviceWardenMsixDev.exe" EntryPoint="Windows.FullTrustApplication">
+    <Application Id="App" Executable="DeviceWardenMsixDev\DeviceWardenMsixDev.exe" EntryPoint="Windows.FullTrustApplication">
       <uap:VisualElements DisplayName="Device Warden (Development)" Description="Local Android device lease manager"
                           BackgroundColor="transparent" Square150x150Logo="Assets\Square150x150Logo.png"
                           Square44x44Logo="Assets\Square44x44Logo.png" />
       <Extensions>
-        <desktop:Extension Category="windows.startupTask" Executable="DeviceWardenMsixDev.exe" EntryPoint="Windows.FullTrustApplication">
+        <desktop:Extension Category="windows.startupTask" Executable="DeviceWardenMsixDev\DeviceWardenMsixDev.exe" EntryPoint="Windows.FullTrustApplication">
           <desktop:StartupTask TaskId="DeviceWardenStartup" Enabled="false" DisplayName="Device Warden" />
         </desktop:Extension>
       </Extensions>
