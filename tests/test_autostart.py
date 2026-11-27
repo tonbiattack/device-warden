@@ -31,6 +31,56 @@ class AutostartTests(unittest.TestCase):
             self.assertEqual(str(pythonw()), r'C:\Apps\DeviceWarden.exe')
             self.assertEqual(str(autostart.packaged_exe()), r'C:\Apps\DeviceWarden.exe')
 
+    def test_msix_identity_requires_a_frozen_packaged_process(self):
+        from device_warden import msixmode
+        with patch.object(msixmode, 'has_package_identity', return_value=True):
+            with patch.object(autostart.sys, 'frozen', True, create=True):
+                self.assertTrue(autostart.has_package_identity())
+            with patch.object(autostart.sys, 'frozen', False, create=True):
+                self.assertFalse(autostart.has_package_identity())
+
+    def test_package_identity_parsing_handles_packaged_and_unpackaged(self):
+        from device_warden import msixmode
+
+        class FakeIdentity:
+            def __init__(self, name=''):
+                self.name = name
+                self.calls = 0
+
+            def __call__(self, length, buffer):
+                self.calls += 1
+                # byref() hands over a CArgObject; the real API writes through it.
+                target = getattr(length, '_obj', length)
+                if buffer is None:
+                    if not self.name:
+                        return 15700  # APPMODEL_ERROR_NO_PACKAGE
+                    target.value = len(self.name) + 1
+                    return msixmode.ERROR_INSUFFICIENT_BUFFER
+                buffer.value = self.name
+                return 0
+
+        self.assertEqual(msixmode._read_identity(FakeIdentity('Family.Name_x')), 'Family.Name_x')
+        self.assertIsNone(msixmode._read_identity(FakeIdentity()))
+
+    def test_development_build_is_identified_by_package_identity(self):
+        from device_warden import msixmode
+        with patch.object(msixmode.sys, 'frozen', True, create=True), \
+             patch.object(msixmode.sys, 'executable', r'C:\Apps\renamed.exe'), \
+             patch.object(msixmode, 'package_family_name',
+                          return_value='Tonbiattack.DeviceWarden.Dev_f66yps8pfc6q8'):
+            self.assertTrue(msixmode.is_development_build())
+
+    def test_msix_never_writes_or_removes_a_startup_shortcut(self):
+        with patch.object(autostart, 'has_package_identity', return_value=True), \
+             patch.object(autostart, 'shortcut_path') as shortcut:
+            with self.assertRaises(autostart.WardenError):
+                autostart.install()
+            with self.assertRaises(autostart.WardenError):
+                autostart.remove()
+            with self.assertRaises(autostart.WardenError):
+                autostart.status()
+            shortcut.assert_not_called()
+
     def test_install_uses_packaged_exe_when_present(self):
         with tempfile.TemporaryDirectory() as folder:
             exe = Path(folder) / 'DeviceWarden.exe'

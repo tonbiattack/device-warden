@@ -7,12 +7,16 @@ import sys
 import time
 from pathlib import Path
 
+from . import msixmode
 from .client import call
+from .msixmode import is_development_build
 from .server import data_dir
 from .store import WardenError
 
-MUTEX_NAME = 'Local\\DeviceWardenTray'
-SHOW_EVENT_NAME = 'Local\\DeviceWardenShow'
+# Keep the experimental package from sharing the production tray's window.
+_DEV_MODE = is_development_build()
+MUTEX_NAME = 'Local\\DeviceWardenTrayMsixDev' if _DEV_MODE else 'Local\\DeviceWardenTray'
+SHOW_EVENT_NAME = 'Local\\DeviceWardenShowMsixDev' if _DEV_MODE else 'Local\\DeviceWardenShow'
 ERROR_ALREADY_EXISTS = 183
 
 
@@ -115,7 +119,19 @@ def shortcut_path():
     return startup_folder() / 'Device Warden.lnk'
 
 
+def has_package_identity():
+    """Detect MSIX identity without confusing a source install for a package."""
+    # Microsoft Store Python has a package identity of its own, but source
+    # installs must keep their normal shortcut behavior; only a frozen app can
+    # be the MSIX build this check is about.
+    if os.name != 'nt' or not getattr(sys, 'frozen', False):
+        return False
+    return msixmode.has_package_identity()
+
+
 def install():
+    if has_package_identity():
+        raise WardenError('MSIX版の自動起動は Windows のスタートアップ設定で管理してください。')
     from .icon import icon_path
     target = packaged_exe() or pythonw()
     bundled = getattr(sys, 'frozen', False) or target.name == 'DeviceWarden.exe'
@@ -139,6 +155,8 @@ def install():
 
 
 def remove():
+    if has_package_identity():
+        raise WardenError('MSIX版の自動起動は Windows のスタートアップ設定で管理してください。')
     try:
         shortcut_path().unlink()
     except FileNotFoundError:
@@ -147,6 +165,8 @@ def remove():
 
 
 def status():
+    if has_package_identity():
+        raise WardenError('MSIX版の自動起動の状態は Windows のスタートアップ設定で確認してください。')
     return shortcut_path().exists()
 
 

@@ -85,6 +85,8 @@ def check_cli():
 
 
 def check_autostart():
+    if autostart.has_package_identity():
+        return _result('自動起動', WARN, 'MSIX版の状態は Windows の設定 → アプリ → スタートアップで確認してください。')
     try:
         registered = autostart.status()
     except OSError as exc:

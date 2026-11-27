@@ -339,6 +339,9 @@ class App:
     def autostart(self):
         from . import autostart
         try:
+            if autostart.has_package_identity():
+                messagebox.showinfo('自動起動', 'MSIX版の自動起動は Windows の設定 → アプリ → スタートアップで管理してください。')
+                return
             if autostart.status():
                 if messagebox.askyesno('自動起動', 'サインイン時の自動起動を解除しますか？'):
                     autostart.remove()
