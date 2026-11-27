@@ -59,8 +59,12 @@ def is_development_build():
     if Path(sys.executable).name.lower() == DEV_EXE:
         return True
     # A renamed executable still behaves safely when the package identity says
-    # it is the development package.
-    return DEV_MARKER in (package_family_name() or '').lower()
+    # it is the development package. The marker must be the last part of the
+    # name: matching a substring would also catch the Store identity
+    # (tonbiattack.DeviceWarden_...) and wrongly isolate the real app.
+    family = package_family_name() or ''
+    name = family.rsplit('_', 1)[0]
+    return name.lower().endswith(DEV_MARKER)
 
 
 def apply_isolation(environ=None):

@@ -10,7 +10,8 @@ import re
 import sys
 from pathlib import Path
 
-TOKENS = ('IDENTITY_NAME', 'PUBLISHER', 'PUBLISHER_DISPLAY_NAME', 'DISPLAY_NAME', 'VERSION')
+TOKENS = ('IDENTITY_NAME', 'PUBLISHER', 'PUBLISHER_DISPLAY_NAME', 'DISPLAY_NAME',
+          'VERSION', 'EXECUTABLE')
 
 # Publisher is the developer-account-wide value shown in Partner Center; it is
 # shared with the other Store apps and is not a secret.
@@ -18,18 +19,23 @@ STORE_PUBLISHER = 'CN=2F14A66E-02DF-43E2-93E0-5C5900B38D2E'
 STORE_PUBLISHER_DISPLAY_NAME = 'tonbiattack'
 STORE_DISPLAY_NAME = 'Device Warden'
 
+# Device Warden recognises the development payload by its executable name, so
+# the Store build must not use that name: it would start in the isolated mode
+# that refuses ADB and ignores the normal data folder.
 PROFILES = {
     'dev': {
         'identity_name': 'Tonbiattack.DeviceWarden.Dev',
         'publisher': 'CN=Device Warden Development',
         'publisher_display_name': 'Device Warden Development',
         'display_name': 'Device Warden (Development)',
+        'executable': 'DeviceWardenMsixDev\\DeviceWardenMsixDev.exe',
     },
     'store': {
         'identity_name': None,
         'publisher': STORE_PUBLISHER,
         'publisher_display_name': STORE_PUBLISHER_DISPLAY_NAME,
         'display_name': STORE_DISPLAY_NAME,
+        'executable': 'DeviceWarden\\DeviceWarden.exe',
     },
 }
 
@@ -55,6 +61,12 @@ def render(template, values):
     if remaining:
         raise ValueError('未設定のトークン: ' + ', '.join(sorted(set(remaining))))
     return text
+
+
+def payload_name(profile):
+    """Return the PyInstaller output folder and executable for a profile."""
+    executable = PROFILES[profile]['executable']
+    return executable.split('\\')[0]
 
 
 def values_for(profile, root, identity_name=None, publisher=None,

@@ -41,6 +41,11 @@ $assets = Join-Path $layout 'Assets'
 New-Item -ItemType Directory -Force $assets | Out-Null
 
 # Render the manifest before packing so the identity is explicit in the output.
+# The payload name is read from the same table so the manifest cannot point at
+# a folder that PyInstaller did not create.
+$payloadName = & $Python -c "from device_warden.msixmanifest import payload_name; print(payload_name('$Profile'))"
+if ($LASTEXITCODE -ne 0) { throw 'ペイロード名を取得できませんでした。' }
+$payloadName = $payloadName.Trim()
 $renderArgs = @('-m', 'device_warden.msixmanifest', '--profile', $Profile,
     '--template', 'msix\AppxManifest.xml', '--output', (Join-Path $layout 'AppxManifest.xml'))
 foreach ($pair in @(@('identity-name', $IdentityName), @('publisher', $Publisher),
@@ -62,7 +67,7 @@ try {
 $exeManifest = (Resolve-Path 'msix\exe.manifest').Path
 # The package is self-contained, so a one-folder build avoids the one-file
 # self-extraction that WACK flags and keeps startup independent of TEMP.
-& $Python -m PyInstaller --noconfirm --clean --onedir --windowed --name DeviceWardenMsixDev `
+& $Python -m PyInstaller --noconfirm --clean --onedir --windowed --name $payloadName `
     --icon $icon --manifest $exeManifest --collect-submodules device_warden `
     --distpath $layout --workpath (Join-Path $root 'pyinstaller') `
     --specpath (Join-Path $root 'pyinstaller') launcher.py
