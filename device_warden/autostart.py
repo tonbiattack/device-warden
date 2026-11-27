@@ -55,11 +55,16 @@ def ensure_broker(timeout=15):
         return False
     if getattr(sys, 'frozen', False):
         command = [sys.executable, '--broker']
+        # A packaged build lives in a read-only folder and one-file extraction
+        # paths disappear with this process, so the child must inherit a valid
+        # working directory instead of the source checkout.
+        working_directory = None
     else:
         command = [str(pythonw()), '-m', 'device_warden.server']
+        working_directory = str(Path(__file__).resolve().parent.parent)
     subprocess.Popen(command,
                      creationflags=hidden_creation_flags(), close_fds=True,
-                     cwd=str(Path(__file__).resolve().parent.parent))
+                     cwd=working_directory)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if broker_running():

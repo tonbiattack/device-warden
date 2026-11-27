@@ -149,6 +149,24 @@ class AutostartTests(unittest.TestCase):
                 import ctypes
                 ctypes.WinDLL('kernel32').SetEvent(event)
 
+    def test_frozen_broker_is_not_given_a_source_checkout_as_cwd(self):
+        """A packaged app cannot rely on the source directory or its extracted files."""
+        with patch.object(autostart, 'broker_running', return_value=False), \
+             patch.object(autostart.subprocess, 'Popen') as popen, \
+             patch.object(autostart.sys, 'frozen', True, create=True), \
+             patch.object(autostart.sys, 'executable', r'C:\Program Files\WindowsApps\app\DeviceWarden.exe'):
+            self.assertFalse(autostart.ensure_broker(timeout=0))
+            command = popen.call_args.args[0]
+            self.assertEqual(command, [r'C:\Program Files\WindowsApps\app\DeviceWarden.exe', '--broker'])
+            self.assertIsNone(popen.call_args.kwargs['cwd'])
+
+    def test_source_broker_keeps_the_repository_as_cwd(self):
+        with patch.object(autostart, 'broker_running', return_value=False), \
+             patch.object(autostart.subprocess, 'Popen') as popen, \
+             patch.object(autostart.sys, 'frozen', False, create=True):
+            self.assertFalse(autostart.ensure_broker(timeout=0))
+            self.assertEqual(Path(popen.call_args.kwargs['cwd']), Path(autostart.__file__).resolve().parent.parent)
+
     def test_broker_running_uses_client(self):
         with patch.object(autostart, 'call', return_value=[]):
             self.assertTrue(autostart.broker_running())
