@@ -37,6 +37,13 @@ jobs:
         run: |
           node integrations/opencode/test.mjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: 安全補助の自己テスト
+        shell: pwsh
+        run: |
+          # Deleting outside %TEMP% must stay impossible; the guard is code, not
+          # just a rule in AGENTS.md.
+          .\scripts\Test-Safety.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: MCPサーバの起動確認
         shell: pwsh
         run: |
