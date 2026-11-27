@@ -31,12 +31,13 @@
 - 出力: `dist\msix-dev\DeviceWarden-dev-unsigned.msix` / `dist\msix-store\DeviceWarden-store-unsigned.msix`
 - Publisher、PublisherDisplayName、表示名、Version は引数で上書きできる（`-Publisher`、`-PublisherDisplayName`、`-DisplayName`、`-Version`）
 - `-Profile store` で `-IdentityName` を省略すると、**推測せずにエラーで止まる**。予約前の誤生成を防ぐため
+- `-CertificateThumbprint <拇印>` を渡すと署名まで行う（未指定なら未署名のまま）
 
 ## 生成後に確認すること
 
 ```powershell
 # マニフェストの値を確認する（展開して読む）
-$pkg = 'dist\msix-store\DeviceWarden-store-unsigned.msix'
+$pkg = 'dist\msix-store\DeviceWarden-store.msix'
 $out = Join-Path $env:TEMP 'dw-store-check'
 Remove-Item $out -Recurse -Force -ErrorAction SilentlyContinue
 makeappx unpack /o /p $pkg /d $out
@@ -50,19 +51,32 @@ $m.Package.Properties
 - `Identity/Name` が Partner Center の「アプリ識別情報の表示」と一致する
 - `Identity/Publisher` が `CN=2F14A66E-02DF-43E2-93E0-5C5900B38D2E`
 - `Properties/PublisherDisplayName` が `tonbiattack`（アプリ表示名ではない）
-- `Properties/DisplayName` と `VisualElements/DisplayName` が `Device Warden`
+- `Properties/DisplayName` と `VisualElements/DisplayName` が、予約した名前に一致する
 - `Identity/Version` が4桁で、前回提出より大きい
 - `StartupTask` が `Enabled="false"` のまま
+- 署名した場合、`Get-AuthenticodeSignature` が `UnknownError`（自己署名で未信頼）でも、署名自体は付いている
 
 ## 署名について
 
-Store は認定後に Microsoft の証明書で再署名するため、証明書の購入・CA 証明書・`.pfx` は不要（[App package requirements](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/msix/app-package-requirements#code-signing-for-microsoft-store-submissions)）。
+Store は認定後に Microsoft の証明書で再署名するため、**証明書の購入・CA 証明書・`.pfx` の用意は不要**（[App package requirements](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/msix/app-package-requirements#code-signing-for-microsoft-store-submissions)、[Store readiness checklist](https://learn.microsoft.com/en-us/windows/apps/publish/store-readiness-checklist)）。
 
-ローカルで署名済みパッケージを試す場合だけ、検証用証明書をマシン範囲で信頼する必要がある。提出の必須手順ではない。
+ただし、アップロードするパッケージには署名を付けておく。Store が「既存の署名を置き換える」形になり、未署名のアーカイブを渡さずに済む。Publisher と一致する Subject のローカル証明書でよい。この証明書をマシンに信頼させる必要は**ない**（Store 配布のみなら）。
+
+```powershell
+# 提出物用の署名証明書（秘密鍵はこのユーザーの Cert:\CurrentUser\My に残る）
+$cert = New-SelfSignedCertificate -Type Custom -KeyUsage DigitalSignature `
+  -Subject 'CN=2F14A66E-02DF-43E2-93E0-5C5900B38D2E' `
+  -CertStoreLocation 'Cert:\CurrentUser\My' `
+  -TextExtension @('2.5.29.37={text}1.3.6.1.5.5.7.3.3', '2.5.29.19={text}')
+
+.\scripts\build-msix.ps1 -Profile store -IdentityName <予約名> -CertificateThumbprint $cert.Thumbprint
+```
+
+この証明書は Store 提出用で、他の配布には使わない。ローカルで**インストールして動かす**場合だけ、公開証明書をマシン範囲で信頼する（提出の必須手順ではない）。不要になった証明書は `Cert:\CurrentUser\My` から削除する。
 
 ## 未確定事項が確定した後の手順
 
-1. `-Profile store -IdentityName <予約名>` でビルドする
+1. `-Profile store -IdentityName <予約名> -CertificateThumbprint <拇印>` でビルドする
 2. 上の確認項目を実測し、結果を Issue #39 に記録する
 3. パッケージパス指定の WACK を実行する（署名済みならインストール済み WACK も可）
-4. Partner Center へ提出する（Muse 側）
+4. Store の掲載情報（プライバシーポリシー URL、スクリーンショット、年齢レーティング）を用意し、Partner Center へ提出する（Muse 側）

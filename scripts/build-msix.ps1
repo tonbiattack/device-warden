@@ -11,8 +11,10 @@ param(
     [string]$PublisherDisplayName = '',
     [string]$DisplayName = '',
     [string]$Version = '',
+    [string]$CertificateThumbprint = '',
     [string]$Python = '',
     [string]$MakeAppx = '',
+    [string]$SignTool = '',
     [string]$OutputRoot = ''
 )
 $ErrorActionPreference = 'Stop'
@@ -73,7 +75,27 @@ try {
 $package = Join-Path $root "DeviceWarden-$Profile-unsigned.msix"
 & $MakeAppx pack /o /d $layout /p $package
 if ($LASTEXITCODE -ne 0) { throw 'MSIX の作成に失敗しました。' }
-Write-Host "Unsigned $Profile MSIX: $package"
+
+# The Store re-signs the package, so its certificate does not need to be trusted
+# here. Signing keeps the upload a normal MSIX and lets the Store replace a
+# signature instead of seeing an unsigned archive.
+if ($CertificateThumbprint) {
+    if (-not $SignTool) {
+        $sdkBin = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
+        $found = Get-ChildItem $sdkBin -Filter signtool.exe -Recurse -ErrorAction Stop |
+            Where-Object { $_.Directory.Name -eq 'x64' } |
+            Sort-Object { $_.Directory.Parent.Name -as [version] } -Descending | Select-Object -First 1
+        if (-not $found) { throw 'Windows SDK の signtool.exe が見つかりません。' }
+        $SignTool = $found.FullName
+    }
+    & $SignTool sign /fd SHA256 /sha1 $CertificateThumbprint $package
+    if ($LASTEXITCODE -ne 0) { throw 'MSIX への署名に失敗しました。' }
+    $signed = Join-Path $root "DeviceWarden-$Profile.msix"
+    Move-Item $package $signed -Force
+    $package = $signed
+    Get-AuthenticodeSignature $package | Select-Object Status, StatusMessage | Format-List | Out-Host
+}
+Write-Host "MSIX: $package"
 if ($Profile -eq 'dev') {
     Write-Host '検証用です。開発者モードか証明書の信頼が必要で、Store に提出しないでください。'
 } else {
