@@ -1,0 +1,86 @@
+name: MSIX
+
+# The development package is not installable without a developer license or a
+# trusted certificate, so CI proves the build and its contents instead of
+# pretending to verify installation.
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main"]
+    paths:
+      - "msix/**"
+      - "scripts/build-msix.ps1"
+      - "launcher.py"
+      - "device_warden/**"
+      - "assets/app-icon.svg"
+      - ".github/workflows/msix.yml"
+  pull_request:
+    paths:
+      - "msix/**"
+      - "scripts/build-msix.ps1"
+      - "launcher.py"
+      - "device_warden/msixmode.py"
+      - "device_warden/autostart.py"
+      - "assets/app-icon.svg"
+      - ".github/workflows/msix.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: ビルド環境を用意
+        shell: pwsh
+        run: |
+          python -m venv .build-venv
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .\.build-venv\Scripts\python -m pip install --quiet --upgrade pip
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .\.build-venv\Scripts\python -m pip install --quiet -e . pyinstaller
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: MSIX をビルド
+        shell: pwsh
+        run: |
+          .\scripts\build-msix.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: パッケージの内容を検証
+        shell: pwsh
+        run: |
+          $package = 'dist\msix-dev\DeviceWarden-dev-unsigned.msix'
+          if (-not (Test-Path $package)) { throw 'MSIX が生成されていません。' }
+          Write-Host "SHA256: $((Get-FileHash $package -Algorithm SHA256).Hash)"
+
+          $sdkBin = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
+          $makeappx = Get-ChildItem $sdkBin -Filter makeappx.exe -Recurse -ErrorAction SilentlyContinue |
+            Where-Object { $_.Directory.Name -eq 'x64' } |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $makeappx) { throw 'makeappx.exe が見つかりません。' }
+
+          $unpacked = Join-Path $env:RUNNER_TEMP 'unpacked'
+          & $makeappx.FullName unpack /o /p $package /d $unpacked
+          if ($LASTEXITCODE -ne 0) { throw 'MSIX を展開できませんでした。' }
+
+          [xml]$manifest = Get-Content (Join-Path $unpacked 'AppxManifest.xml')
+          $identity = $manifest.SelectSingleNode("//*[local-name()='Identity']")
+          if ($identity.Name -notlike '*.Dev') {
+            throw "開発用の ID ではありません: $($identity.Name)"
+          }
+          $application = $manifest.SelectSingleNode("//*[local-name()='Application']")
+          if ($application.Executable -ne 'DeviceWardenMsixDev.exe') {
+            throw "想定と違う実行ファイルです: $($application.Executable)"
+          }
+          $task = $manifest.SelectSingleNode("//*[local-name()='StartupTask']")
+          if (-not $task) { throw 'StartupTask の宣言がありません。' }
+          if ($task.Enabled -ne 'false') {
+            throw "StartupTask が既定で有効です: $($task.Enabled)"
+          }
+          Write-Host "executable=$($application.Executable) identity=$($identity.Name) startup=$($task.Enabled)"
+
+          Get-ChildItem $unpacked -Recurse -File |
+            ForEach-Object { Write-Host $_.FullName.Substring($unpacked.Length + 1) }
