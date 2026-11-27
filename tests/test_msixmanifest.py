@@ -44,9 +44,17 @@ class ProfileTests(unittest.TestCase):
     def test_store_profile_keeps_the_packaged_guards(self):
         root = rendered('store', identity_name='tonbiattack.DeviceWarden')
         applications = root.findall('.//*[@Executable]')
-        self.assertTrue(all(app.attrib['Executable'] == 'DeviceWardenMsixDev\\DeviceWardenMsixDev.exe'
+        self.assertTrue(all(app.attrib['Executable'] == 'DeviceWarden\\DeviceWarden.exe'
                             for app in applications))
         self.assertEqual(root.find('.//{*}StartupTask').attrib['Enabled'], 'false')
+
+    def test_store_payload_does_not_use_the_development_executable_name(self):
+        """The development name triggers the isolated mode, so the Store app must not use it."""
+        self.assertEqual(msixmanifest.payload_name('dev'), 'DeviceWardenMsixDev')
+        self.assertEqual(msixmanifest.payload_name('store'), 'DeviceWarden')
+        root = rendered('store', identity_name='tonbiattack.DeviceWarden')
+        for application in root.findall('.//*[@Executable]'):
+            self.assertNotIn('MsixDev', application.attrib['Executable'])
 
     def test_version_matches_pyproject_as_four_numbers(self):
         version = msixmanifest.project_version(ROOT)

@@ -70,6 +70,15 @@ class AutostartTests(unittest.TestCase):
                           return_value='Tonbiattack.DeviceWarden.Dev_f66yps8pfc6q8'):
             self.assertTrue(msixmode.is_development_build())
 
+    def test_store_package_name_is_not_mistaken_for_development(self):
+        """`.dev` must not match the .DeviceWarden prefix of the Store identity."""
+        from device_warden import msixmode
+        with patch.object(msixmode.sys, 'frozen', True, create=True), \
+             patch.object(msixmode.sys, 'executable', r'C:\Apps\DeviceWarden.exe'), \
+             patch.object(msixmode, 'package_family_name',
+                          return_value='tonbiattack.DeviceWarden_e28ksxe3fc9w4'):
+            self.assertFalse(msixmode.is_development_build())
+
     def test_msix_never_writes_or_removes_a_startup_shortcut(self):
         with patch.object(autostart, 'has_package_identity', return_value=True), \
              patch.object(autostart, 'shortcut_path') as shortcut:

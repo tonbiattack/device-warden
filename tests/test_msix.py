@@ -15,14 +15,24 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 class MsixGuardTests(unittest.TestCase):
-    def test_manifest_template_uses_the_isolated_executable(self):
+    def test_manifest_template_leaves_the_executable_to_the_profile(self):
         root = ET.parse(ROOT / 'msix' / 'AppxManifest.xml').getroot()
         apps = root.findall('.//*[@Executable]')
         self.assertTrue(apps)
-        expected = 'DeviceWardenMsixDev\\DeviceWardenMsixDev.exe'
-        self.assertTrue(all(app.attrib['Executable'] == expected for app in apps))
+        # The development build and the Store build must not share an
+        # executable name, because the name selects the isolated mode.
+        self.assertTrue(all(app.attrib['Executable'] == '{{EXECUTABLE}}' for app in apps))
         startup = root.find('.//{*}StartupTask')
         self.assertEqual(startup.attrib['Enabled'], 'false')
+
+    def test_packaged_store_build_is_not_the_development_mode(self):
+        """A Store build must use the normal data folder and real ADB."""
+        from device_warden import msixmode
+        with patch.object(msixmode.sys, 'frozen', True, create=True), \
+             patch.object(msixmode.sys, 'executable', r'C:\Program Files\WindowsApps\app\DeviceWarden\DeviceWarden.exe'), \
+             patch.object(msixmode, 'package_family_name',
+                          return_value='tonbiattack.DeviceWarden_e28ksxe3fc9w4'):
+            self.assertFalse(msixmode.is_development_build())
 
     def test_development_launcher_forces_a_separate_home_and_port(self):
         executable = r'C:\test\DeviceWardenMsixDev.exe'
