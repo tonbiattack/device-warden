@@ -20,6 +20,8 @@ HIDDEN = getattr(subprocess, 'CREATE_NO_WINDOW', 0) if os.name == 'nt' else 0
 
 
 def run_adb(args, timeout):
+    if os.environ.get('DEVICE_WARDEN_MSIX_DEV_NO_ADB') == '1':
+        raise WardenError('MSIX検証版では実機ADBを無効化しています。')
     result = subprocess.run(args, capture_output=True, timeout=timeout, check=False,
                             creationflags=HIDDEN)
     # Device props contain arbitrary bytes; ADB emits UTF-8, but the Windows
@@ -158,6 +160,8 @@ class Store:
         return db
 
     def discover(self, output=None):
+        if os.environ.get('DEVICE_WARDEN_MSIX_DEV_NO_ADB') == '1':
+            raise WardenError('MSIX検証版では実機ADBを無効化しています。')
         if output is None:
             try:
                 result = run_adb(['adb', 'devices', '-l'], timeout=10)
@@ -278,6 +282,8 @@ class Store:
             return devices
 
     def claim(self, kind, device_id=None, tool=None, session_id=None, title=None, project=None, workdir=None, pid=None, resume=False):
+        if os.environ.get('DEVICE_WARDEN_MSIX_DEV_NO_ADB') == '1':
+            raise WardenError('MSIX検証版では端末の確保を無効化しています。')
         if kind not in ('human', 'ai') or (kind == 'ai' and not tool):
             raise WardenError('所有者の種類とAIツール名を指定してください。')
         if tool and tool.lower() == 'opencode' and not session_id:

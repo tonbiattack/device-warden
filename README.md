@@ -60,6 +60,10 @@ Python、データフォルダ、Brokerトークン、Brokerの応答、`adb`、
 
 失敗が1つでもあれば終了コードは 1 です。
 
+## MSIX の技術検証
+
+Microsoft Store 向けの MSIX 化は調査中です。現時点では、実データ・ADB と隔離された**未署名の検証用ビルド**のみで、通常利用や Store 提出には使えません。インストール・永続化・実端末との連携は未検証です。WACK の総合判定は PASS でしたが、任意テストに FAIL が残っています。詳細は [MSIX 技術検証](docs/MSIX-TECHNICAL-VALIDATION.md) を参照してください。
+
 ## 動作環境
 
 | 要件 | 補足 |
