@@ -113,8 +113,16 @@ class LeaseKeeper:
     def start(self):
         self.thread.start()
 
-    def stop(self):
+    def stop(self, timeout=5):
+        """Stop heartbeats and wait, so the process can release its store.
+
+        Only setting the event lets a heartbeat that is already in flight finish
+        after the caller believes it stopped, which keeps the SQLite file open
+        and breaks teardown.
+        """
         self.stopped.set()
+        if self.thread.is_alive() and threading.current_thread() is not self.thread:
+            self.thread.join(timeout)
 
     def _loop(self):
         while not self.stopped.wait(self.interval):

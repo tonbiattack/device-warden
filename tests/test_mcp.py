@@ -72,7 +72,9 @@ class LeaseTests(unittest.TestCase):
     """Exercise claim/release/adb against a real Broker over HTTP."""
 
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
+        # Windows can still hold a just-written database briefly after every
+        # thread has stopped (indexer or scanner), which must not fail the test.
+        self.temp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(self.temp.cleanup)
         self.home = Path(self.temp.name)
         (self.home / 'broker.token').write_text(TOKEN, encoding='utf-8')
@@ -90,6 +92,7 @@ class LeaseTests(unittest.TestCase):
         self.server = Server(self.keeper)
 
     def stop(self):
+        self.keeper.stop()
         self.httpd.shutdown()
         self.httpd.server_close()
         self.thread.join()
@@ -144,6 +147,13 @@ class LeaseTests(unittest.TestCase):
         claimed = self.payload(self.call('claim'))
         status = self.payload(self.call('status'))
         self.assertEqual([row['device_id'] for row in status], [claimed['device_id']])
+
+    def test_stop_waits_for_the_heartbeat_thread(self):
+        """Stop must leave no worker behind, or the store stays locked."""
+        keeper = LeaseKeeper(interval=0.01)
+        keeper.start()
+        keeper.stop()
+        self.assertFalse(keeper.thread.is_alive())
 
     def test_heartbeat_loop_keeps_the_lease_active(self):
         """A lease must survive longer than the 120s timeout without agent help."""
