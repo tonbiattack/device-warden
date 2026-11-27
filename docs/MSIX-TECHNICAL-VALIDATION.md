@@ -2,9 +2,9 @@
 
 ## 結論
 
-これは **Store 提出版ではなく、実機・実データから隔離した x64 の試作**。MakeAppx によるパッケージ作成までは成功したが、インストール・実行の受け入れ条件は未達。マニフェストの ID、発行元、表示名、バージョンは仮値で、Partner Center から割り当てられる正式な ID と一致しない。署名されていないビルド成果物は配布・提出しない。
+**開発者モードを有効にしたこのマシンで、隔離した開発用 MSIX の登録・起動・永続化・アンインストールまで確認できた。** ただし署名済みパッケージのインストール、実端末のリース、Store 提出は未達・未検証。
 
-試作の準備例（Python 3.11 以上、Windows SDK が必要）:
+試作は正式な Store 版ではない。マニフェストの ID、発行元、表示名、バージョンは仮値で、Partner Center の正式 ID と一致しない。署名済み `.msix` は自己署名で、このマシンではまだ信頼されていない。配布・提出には使わない。
 
 ```powershell
 python -m venv .build-venv
@@ -12,68 +12,69 @@ python -m venv .build-venv
 .\scripts\build-msix.ps1
 ```
 
-`dist/msix-dev/DeviceWarden-dev-unsigned.msix` に未署名の検証用パッケージを生成する。
+`dist/msix-dev/DeviceWarden-dev-unsigned.msix` に未署名の検証用パッケージを生成する。登録は開発者モードで行う。
 
-試作は独立した `%USERPROFILE%\.device-warden-msix-dev` とポート 47632 を使用し、ADB と端末の確保を禁止する。判別は実行ファイル名だけでなく、パッケージ識別名（`...Dev_...`）でも行う。実行ファイル名を変えても隔離が外れないようにするためである。**本物の端末を二つの独立した DB で管理すると排他が効かない**ため、この制約は意図的である。したがってこの試作は実機の claim / heartbeat / release や ADB 連携を検証できない。試作データもトークンを含むため公開しない。正式版は既存 Broker との安全な共存方法を検証してから決める。
+```powershell
+# 開発者モード（管理者）。0 に戻せば元へ戻る。
+reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock" `
+  /v AllowDevelopmentWithoutDevLicense /t REG_DWORD /d 1 /f
 
-## 観察した結果
+# 生成した layout を登録する（未署名のまま）
+Add-AppxPackage -Register dist\msix-dev\layout-*\AppxManifest.xml
+```
+
+## 実測した結果
+
+環境: Windows 11 Pro 26300、Windows SDK / WACK 10.0.26100.9457、Python 3.13。
 
 | 項目 | 結果 |
 | --- | --- |
-| 開発版 MSIX の作成 | `scripts/build-msix.ps1` と Windows SDK MakeAppx で成功。出力は未署名。 |
-| パッケージ内容 | `makeappx unpack` で展開でき、中身は `AppxManifest.xml`・`AppxBlockMap.xml`・exe・タイル画像3枚の計6ファイルのみ。個人データやトークンは含まれない。 |
-| 試作 exe の隔離 | **非 MSIX として** Broker を起動し、通常 Broker の 47631 と試作の 47632 が別プロセスで動作した。子プロセスへ `DEVICE_WARDEN_*` を一切渡さなくても、試作は専用 DB を使い一覧は空、`claim` は拒否した。MSIX の仮想化や loopback の証明ではない。 |
-| 未署名レイアウト登録 | `Add-AppxPackage -Register` が `0x80073CFF` で拒否。開発者モード未有効。 |
-| 署名付き試作のインストール | 自己署名の検証用パッケージで `0x800B0109`。証明書はマシンで信頼されていない。CurrentUser の TrustedPeople に一時追加しても同じ結果、追加は直後に削除した。 |
-| WACK | 署名付きの最新試作に対し WACK 10.0.26100.9457 を非管理者で実行。DPI マニフェスト追加後、XML の総合結果は **PASS**、23 項目 PASS。ただし任意の TEST88 は **FAIL**（CreateProcessW と実行可能ファイル名への静的参照）で、文字どおりの全項目 PASS ではない。高 DPI の実際の表示品質は未検証。 |
-| CI | `.github/workflows/msix.yml` が同じビルドと内容検査（ID・実行ファイル名・StartupTask 無効）を行う。ローカルで同じ検査手順が通ることは確認済み。 |
-| Android 端末 | 検証時点では実機・エミュレーターとも未接続。 |
-| 再起動とアンインストール | MSIX を登録できず未検証。 |
+| パッケージ生成 | MakeAppx で成功（未署名）。内容は `AppxManifest.xml`・`AppxBlockMap.xml`・exe・タイル画像3枚の計6ファイルで、個人データやトークンを含まない。 |
+| 登録 | 開発者モード有効化後、未署名レイアウトの `Add-AppxPackage -Register` が成功。`Tonbiattack.DeviceWarden.Dev_0.2.0.0_x64__f66yps8pfc6q8`、Status は `Ok`。 |
+| 起動 | スタートメニュー項目「Device Warden (Development)」から起動でき、GUI ウィンドウ「Device Warden」が表示された。プロセスは bootloader の親子と `--broker` の3つ。 |
+| 単一インスタンス | 起動中にもう一度起動してもプロセス数と起動時刻は変わらず、既存ウィンドウが残った（二重起動しない）。 |
+| 隔離 | パッケージから起動した Broker は **47632 のみ**を待ち受け、専用 DB（`~/.device-warden-msix-dev/warden.db`）を使った。一覧は空、`claim` は「MSIX検証版では端末の確保を無効化しています」で拒否。通常の Broker（47631）はそのまま稼働を続けた。 |
+| exe 隣への書込み | 実行後も layout に増えたのは Windows が作る `microsoft.system.package.metadata` だけで、DB・アイコン・ログは作られなかった。生成物はすべて `DEVICE_WARDEN_HOME` 側。 |
+| 永続化 | 起動中に `default-policy` で書いた設定（`default_ai_allowed=0`）が、プロセス停止・再起動後も DB に残った。DB は 65536 バイト。 |
+| loopback とトークン共有 | パッケージ内の Broker へ、**パッケージ外の通常 Python クライアント**がトークン認証付きで接続できた。full-trust ではこの向きの loopback と `%USERPROFILE%` のトークン共有が通る。 |
+| 自動起動 | `desktop:StartupTask` は無効のまま。既存の Startup フォルダのショートカット（通常版 `dist\DeviceWarden.exe`、2026-11-14 作成）は変更されず、MSIX 版が二重登録を作らなかった。 |
+| アンインストール | パッケージ、スタートメニュー項目、プロセスが消え、47632 も閉じた。専用データは**パッケージ外なので残る**（設計どおり）。強制終了したため `broker.token` が残ったが、次回起動時に置き換わる。通常版の Broker とショートカットは無傷。 |
+| 署名済み MSIX のインストール | `0x800B0109`（ルート証明書が未信頼）。CurrentUser の TrustedPeople へ一時追加しても同じで、追加は直後に削除した。マシン範囲の信頼（管理者）が必要。 |
+| WACK（パッケージパス指定） | 総合 **PASS**、23 項目 PASS。任意の TEST88（ブロック済み実行可能ファイル）は CreateProcessW と実行可能ファイル名への静的参照で **FAIL**。DPI の WARNING は PerMonitorV2 宣言で解消した。 |
+| WACK（インストール済み） | `appcert.exe` が管理者権限を要求するため未実施。 |
+| Android 端末 | 検証時点では実機・エミュレーターとも未接続。ADB は試作が拒否する設計のため、実端末の claim / heartbeat / release は未検証。 |
 
-WACK は管理者権限での実行が公式手順であり、今回の結果だけで Store 認証の可否を断定しない。レポートや試験パッケージは `dist/` に生成されるローカル試験成果物で、公開しない。
+## 未検証と制約
 
-## 保存先と互換性
+- **ADB と claim の拒否は試作品だけの性質**で、MSIX 化そのものの制限ではない。正式版は `DEVICE_WARDEN_HOME`・ポート・端末を通常版と共有するため、二重 DB の問題は起きない（同じポートなので Broker は1つだけ）。試作で隔離したのは、検証中に実データと実端末を触らないためである。
+- **署名済みパッケージの配布経路**は未検証。マシン範囲の証明書信頼か、正式なコード署名証明書が必要。信頼変更は同じ発行元の他のパッケージにも影響し得る。
+- レイアウト登録ではアプリが**ソースフォルダから実行**される。WindowsApps 配下の読み取り専用パッケージでの挙動（更新・修復・仮想化）は未検証。今回確認できたのは「exe の隣に書かない」ところまで。
+- 逆向きの loopback（パッケージから外部 Broker へ）は、隔離のため別ポートを使っており未検証。
+- トレイアイコンの目視、通知、高 DPI の実際の表示品質は未確認。
+- StartupTask の有効化、ユーザーによる無効化の尊重、サインアウト／再サインイン後の起動は未検証。
+- 実端末を使う検証は、隔離した二つ目の DB が同じ端末を「空き」と誤認するため行っていない。通常 Broker と競合しない方式を決めてから実施する。
+- Partner Center の正式 ID、証明書、Store 申告、S モードや外部 `adb` 依存の扱いは未対応。
 
-通常版は `DEVICE_WARDEN_HOME` がなければ `%USERPROFILE%\.device-warden` に DB・トークン・生成アイコンを置く。外部 CLI / MCP / OpenCode と同じトークンを見られることが要件。パッケージ内は読み取り専用であり、生成ファイルを実行ファイルの隣には置かない。PyInstaller の one-file 展開は一時ディレクトリを使う。MSIX 版で実際に同一パスへ読み書き・再起動後に復元・アンインストール後に期待どおり残るかは未検証。移行や削除を勝手に行わない。
+## 保存先の考え方
 
-[Microsoft のパッケージ化デスクトップアプリの説明](https://learn.microsoft.com/en-us/windows/msix/desktop/desktop-to-uwp-behind-the-scenes)では、パッケージ内容は読み取り専用で、仮想化対象や AppData の挙動はアプリの種類により異なる。[コンテナ化の概要](https://learn.microsoft.com/en-us/windows/msix/msix-containerization-overview)では、full-trust アプリのユーザープロファイルへの書き込みは通常そのまま通ると説明されている。`%USERPROFILE%` 配下の動作を推測せず、**パッケージ起動プロセスと通常プロセスの両側から実測する**。`DEVICE_WARDEN_HOME` の外部指定先についても同様。
+通常版は `DEVICE_WARDEN_HOME` がなければ `%USERPROFILE%\.device-warden` に DB・トークン・生成アイコンを置く。外部 CLI / MCP / OpenCode と同じトークンを見られることが要件で、今回の実測でもパッケージ外のクライアントが同じトークンで接続できた。
+
+[コンテナ化の概要](https://learn.microsoft.com/en-us/windows/msix/msix-containerization-overview)では、full-trust アプリのユーザープロファイルへの書き込みは通常そのまま通ると説明されている。今回の実測はこれと矛盾しない。パッケージ内は読み取り専用で、PyInstaller の one-file 展開は一時ディレクトリを使う。
 
 ## 自動起動・常駐
 
-試作は MSIX の `desktop:StartupTask` を **既定無効**で宣言する。インストール直後に同意なくサインイン時起動を有効にしないためで、有効化はユーザーが Windows の設定から行う。MSIX 版から従来の Startup フォルダのショートカットを書かないようにし、GUI は Windows の「設定 → アプリ → スタートアップ」を案内する。実際の有効化、ユーザーによる無効化の尊重、サインアウト／再サインイン後の動作は未検証。既存の通常版ショートカットがあれば、移行時に両方起動しないよう所有者が確認する。詳細は [StartupTask の仕様](https://learn.microsoft.com/en-us/uwp/schemas/appxpackage/uapmanifestschema/element-desktop-startuptask)。トレイの表示・二重起動・前面化も MSIX 上では未確認。
+`desktop:StartupTask` は **既定無効**で宣言する。インストール直後に同意なくサインイン時起動を有効にしないためで、有効化はユーザーが Windows の設定から行う。MSIX 版は従来の Startup フォルダのショートカットを書かず、GUI は「設定 → アプリ → スタートアップ」を案内する。既存の通常版ショートカットが残っている場合、両方が起動し得るため移行時に所有者が確認する。詳細は [StartupTask の仕様](https://learn.microsoft.com/en-us/uwp/schemas/appxpackage/uapmanifestschema/element-desktop-startuptask)。
 
 ## localhost と外部依存
 
-Broker は 127.0.0.1 のトークン認証 API。試作の非 MSIX Broker との通信成功、および試作 Broker が実端末の claim を拒否することは確認したが、MSIX 版の疎通を意味しない。Microsoft の [IPC の説明](https://learn.microsoft.com/en-us/windows/apps/develop/communication/interprocess-communication) は packaged アプリの loopback と例外を説明しているが、full-trust アプリの実際の組み合わせはこの環境で確認できていない。**免除は成功の前提と決めつけず**、パッケージ化されたトレイ・Broker と通常の CLI / MCP / OpenCode の各方向を計測する。免除が必要なら管理者権限・配布可能性・適用範囲を確認する。無断で `CheckNetIsolation` の設定は変更しない。
+Broker は 127.0.0.1 のトークン認証 API。今回、パッケージ内 Broker への外部クライアント接続は通ったが、これは full-trust の実測であって Store 審査や他環境を保証しない。loopback 免除（`CheckNetIsolation`）は管理者権限が必要で、Store 配布の手段としては使わない。必要になった場合は適用範囲と撤去を決めてから行う。
 
-ADB（Android SDK Platform-Tools）は必須、scrcpy と apksigner は利用機能に応じて別途必要。MSIX はそれらを同梱しない。PATH とパッケージ化プロセスからの外部プログラム起動、ライセンス、Store の申告・S モードの制約は別途確認する。「別途 adb が必要」と表示するだけで Store 審査を満たすかは未確認。
+ADB（Android SDK Platform-Tools）は必須、scrcpy と apksigner は利用機能に応じて別途必要。MSIX はそれらを同梱しない。PATH とパッケージ化プロセスからの外部プログラム起動、ライセンス、Store の申告・S モードの制約は別途確認する。
 
-## 管理者権限が必要な次の一手
+## 残作業
 
-インストール検証は、次のどちらかを**管理者が明示的に**行うまで進められない。どちらもマシンの信頼設定を変えるため、実施範囲・期限・撤去を決めてから行う。
-
-```powershell
-# A. 開発者モードを有効にする（管理者）。0 に戻せば元へ戻る。
-reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock" `
-  /v AllowDevelopmentWithoutDevLicense /t REG_DWORD /d 1 /f
-# 元に戻す: /d 0
-```
-
-```powershell
-# B. 検証用証明書の「公開証明書のみ」を信頼する（管理者）。
-#    秘密鍵（.pfx）は配布も共有もしない。
-Import-Certificate -FilePath .\dev-signing.cer -CertStoreLocation Cert:\LocalMachine\TrustedPeople
-# 撤去: 拇印を確認して削除する
-Get-ChildItem Cert:\LocalMachine\TrustedPeople |
-  Where-Object Thumbprint -eq '<thumbprint>' | Remove-Item
-```
-
-B は同じ発行元の他のパッケージにも影響し得る。A は開発者モードを常時有効にする。どちらも、この試作だけを入れて消す目的なら**検証後に戻す**。
-
-## 検証を再開するために必要なこと
-
-1. 管理者が Windows の開発者モードを有効にするか、適切な検証用コード署名証明書の公開証明書をマシンの TrustedPeople に登録する（上の手順）。信頼変更は他のパッケージにも影響し得るため、期限・対象・撤去手順を確認する。秘密鍵は共有しない。
-2. 試作と別に、**実機テスト時は通常 Broker と競合しない設計**を準備し、ユーザーの許可の下で実端末の確保、heartbeat、解放を試す。
-3. パッケージからの起動・トレイ・二重起動、通常 CLI / MCP / OpenCode の疎通、再起動後の DB・トークン、StartupTask、アンインストール後のデータを検証する。
-4. 管理者権限かつアクティブなユーザーセッションで [WACK の公式手順](https://learn.microsoft.com/en-us/windows/uwp/debug-test-perf/windows-app-certification-kit)を実施し、XML の各結果を確認する。任意 TEST88 の FAIL を調査し、全項目 PASS と Store 審査可否を別々に判断する。
-5. Partner Center の正式な package identity・証明書・申告情報を用意してから提出用パッケージを作り、再検証する。
+1. 署名済みパッケージを配布するなら、正式なコード署名証明書を用意し、マシン範囲の信頼（管理者）でインストールを再検証する。検証用証明書の公開証明書だけを信頼する場合の撤去手順も決める。
+2. 実機検証を通常 Broker と競合させない方式（例: 通常版だけを使い、MSIX 版は UI と常駐の確認に限定する）を決める。
+3. 管理者権限のアクティブセッションで、インストール済みパッケージに WACK を実行する。任意 TEST88 の FAIL は静的参照の指摘なので、実行時の子プロセス起動（Broker、adb、scrcpy）とあわせて評価する。
+4. StartupTask の有効化とサインイン時起動、高 DPI、トレイ通知を実機で確認する。
+5. Partner Center の正式 ID・証明書・申告情報を用意し、提出用パッケージを作り直す。
