@@ -34,7 +34,9 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'EXE アイコンの生成に失敗しました。' }
 } finally { Remove-Item Env:\DW_MSIX_EXE_ICON -ErrorAction SilentlyContinue }
 $exeManifest = (Resolve-Path 'msix\exe.manifest').Path
-& $Python -m PyInstaller --noconfirm --clean --onefile --windowed --name DeviceWardenMsixDev `
+# The package is self-contained, so a one-folder build avoids the one-file
+# self-extraction that WACK flags and keeps startup independent of TEMP.
+& $Python -m PyInstaller --noconfirm --clean --onedir --windowed --name DeviceWardenMsixDev `
     --icon $icon --manifest $exeManifest --collect-submodules device_warden `
     --distpath $layout --workpath (Join-Path $root 'pyinstaller') `
     --specpath (Join-Path $root 'pyinstaller') launcher.py

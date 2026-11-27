@@ -72,7 +72,7 @@ jobs:
             throw "開発用の ID ではありません: $($identity.Name)"
           }
           $application = $manifest.SelectSingleNode("//*[local-name()='Application']")
-          if ($application.Executable -ne 'DeviceWardenMsixDev.exe') {
+          if ($application.Executable -ne 'DeviceWardenMsixDev\DeviceWardenMsixDev.exe') {
             throw "想定と違う実行ファイルです: $($application.Executable)"
           }
           $task = $manifest.SelectSingleNode("//*[local-name()='StartupTask']")

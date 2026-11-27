@@ -23,15 +23,19 @@ reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock" `
 Add-AppxPackage -Register dist\msix-dev\layout-*\AppxManifest.xml
 ```
 
+## パッケージ構成
+
+one-folder（`--onedir`）でビルドし、`DeviceWardenMsixDev\DeviceWardenMsixDev.exe` を起動対象にしている。one-file は起動のたびに自分自身を一時ディレクトリへ展開するため、読み取り専用のパッケージには向かない。one-folder なら展開も自己再実行も無く、WACK の指摘も exe と Python 本体の静的なプロセス起動参照だけになる（TEST88、任意）。
+
 ## 実測した結果
 
 環境: Windows 11 Pro 26300、Windows SDK / WACK 10.0.26100.9457、Python 3.13。
 
 | 項目 | 結果 |
 | --- | --- |
-| パッケージ生成 | MakeAppx で成功（未署名）。内容は `AppxManifest.xml`・`AppxBlockMap.xml`・exe・タイル画像3枚の計6ファイルで、個人データやトークンを含まない。 |
+| パッケージ生成 | MakeAppx で成功（未署名）。one-folder 構成で、exe と `_internal` を含む約21MB。個人データやトークンは含まない。 |
 | 登録 | 開発者モード有効化後、未署名レイアウトの `Add-AppxPackage -Register` が成功。`Tonbiattack.DeviceWarden.Dev_0.2.0.0_x64__f66yps8pfc6q8`、Status は `Ok`。 |
-| 起動 | スタートメニュー項目「Device Warden (Development)」から起動でき、GUI ウィンドウ「Device Warden」が表示された。プロセスは bootloader の親子と `--broker` の3つ。 |
+| 起動 | スタートメニュー項目「Device Warden (Development)」から起動でき、GUI ウィンドウ「Device Warden」が表示された。プロセスは GUI と `--broker` の2つ（one-folder なので one-file の自己展開プロセスが無い）。 |
 | 単一インスタンス | 起動中にもう一度起動してもプロセス数と起動時刻は変わらず、既存ウィンドウが残った（二重起動しない）。 |
 | 隔離 | パッケージから起動した Broker は **47632 のみ**を待ち受け、専用 DB（`~/.device-warden-msix-dev/warden.db`）を使った。一覧は空、`claim` は「MSIX検証版では端末の確保を無効化しています」で拒否。通常の Broker（47631）はそのまま稼働を続けた。 |
 | exe 隣への書込み | 実行後も layout に増えたのは Windows が作る `microsoft.system.package.metadata` だけで、DB・アイコン・ログは作られなかった。生成物はすべて `DEVICE_WARDEN_HOME` 側。 |
@@ -40,7 +44,7 @@ Add-AppxPackage -Register dist\msix-dev\layout-*\AppxManifest.xml
 | 自動起動 | `desktop:StartupTask` は無効のまま。既存の Startup フォルダのショートカット（通常版 `dist\DeviceWarden.exe`、2026-11-14 作成）は変更されず、MSIX 版が二重登録を作らなかった。 |
 | アンインストール | パッケージ、スタートメニュー項目、プロセスが消え、47632 も閉じた。専用データは**パッケージ外なので残る**（設計どおり）。強制終了したため `broker.token` が残ったが、次回起動時に置き換わる。通常版の Broker とショートカットは無傷。 |
 | 署名済み MSIX のインストール | `0x800B0109`（ルート証明書が未信頼）。CurrentUser の TrustedPeople へ一時追加しても同じで、追加は直後に削除した。マシン範囲の信頼（管理者）が必要。 |
-| WACK（パッケージパス指定） | 総合 **PASS**、23 項目 PASS。任意の TEST88（ブロック済み実行可能ファイル）は CreateProcessW と実行可能ファイル名への静的参照で **FAIL**。DPI の WARNING は PerMonitorV2 宣言で解消した。 |
+| WACK（パッケージパス指定） | 総合 **PASS**。任意の TEST88（ブロック済み実行可能ファイル）は、exe と `python313.dll` が CreateProcessW / ShellExecuteW を参照しているため **FAIL**。Broker・adb・scrcpy を起動する設計上、静的な参照は避けられない。DPI の WARNING は PerMonitorV2 宣言で解消した。 |
 | WACK（インストール済み） | 管理者権限で `-packagefullname` を実行したが、**全項目 FAIL**。メッセージは「このアプリ パッケージのマニフェスト ファイルが見つかりませんでした」「パスの形式が無効です」で、レイアウト登録（WindowsApps ではない）のパッケージを WACK が解決できないため。アプリの不具合ではなく、正式インストール（署名済み）で再実行する必要がある。 |
 | Android 端末 | 検証時点では実機・エミュレーターとも未接続。ADB は試作が拒否する設計のため、実端末の claim / heartbeat / release は未検証。 |
 
