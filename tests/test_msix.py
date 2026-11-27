@@ -15,13 +15,12 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 class MsixGuardTests(unittest.TestCase):
-    def test_manifest_uses_only_the_isolated_executable(self):
+    def test_manifest_template_uses_the_isolated_executable(self):
         root = ET.parse(ROOT / 'msix' / 'AppxManifest.xml').getroot()
         apps = root.findall('.//*[@Executable]')
         self.assertTrue(apps)
         expected = 'DeviceWardenMsixDev\\DeviceWardenMsixDev.exe'
         self.assertTrue(all(app.attrib['Executable'] == expected for app in apps))
-        self.assertIn('.Dev', root.find('{*}Identity').attrib['Name'])
         startup = root.find('.//{*}StartupTask')
         self.assertEqual(startup.attrib['Enabled'], 'false')
 

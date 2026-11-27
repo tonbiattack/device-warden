@@ -4,11 +4,12 @@
          xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
          xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
          IgnorableNamespaces="uap desktop rescap">
-  <!-- The identity and publisher are development placeholders, not Store identity. -->
-  <Identity Name="Tonbiattack.DeviceWarden.Dev" Publisher="CN=Device Warden Development" Version="0.2.0.0" ProcessorArchitecture="x64" />
+  <!-- Tokens are filled by device_warden.msixmanifest: the development build and
+       the Store build use different identity values. -->
+  <Identity Name="{{IDENTITY_NAME}}" Publisher="{{PUBLISHER}}" Version="{{VERSION}}" ProcessorArchitecture="x64" />
   <Properties>
-    <DisplayName>Device Warden (Development)</DisplayName>
-    <PublisherDisplayName>Device Warden Development</PublisherDisplayName>
+    <DisplayName>{{DISPLAY_NAME}}</DisplayName>
+    <PublisherDisplayName>{{PUBLISHER_DISPLAY_NAME}}</PublisherDisplayName>
     <Description>Local Android device lease manager</Description>
     <Logo>Assets\StoreLogo.png</Logo>
   </Properties>
@@ -18,12 +19,12 @@
   <Resources><Resource Language="ja-jp" /></Resources>
   <Applications>
     <Application Id="App" Executable="DeviceWardenMsixDev\DeviceWardenMsixDev.exe" EntryPoint="Windows.FullTrustApplication">
-      <uap:VisualElements DisplayName="Device Warden (Development)" Description="Local Android device lease manager"
+      <uap:VisualElements DisplayName="{{DISPLAY_NAME}}" Description="Local Android device lease manager"
                           BackgroundColor="transparent" Square150x150Logo="Assets\Square150x150Logo.png"
                           Square44x44Logo="Assets\Square44x44Logo.png" />
       <Extensions>
         <desktop:Extension Category="windows.startupTask" Executable="DeviceWardenMsixDev\DeviceWardenMsixDev.exe" EntryPoint="Windows.FullTrustApplication">
-          <desktop:StartupTask TaskId="DeviceWardenStartup" Enabled="false" DisplayName="Device Warden" />
+          <desktop:StartupTask TaskId="DeviceWardenStartup" Enabled="false" DisplayName="{{DISPLAY_NAME}}" />
         </desktop:Extension>
       </Extensions>
     </Application>

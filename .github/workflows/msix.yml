@@ -84,3 +84,26 @@ jobs:
 
           Get-ChildItem $unpacked -Recurse -File |
             ForEach-Object { Write-Host $_.FullName.Substring($unpacked.Length + 1) }
+      - name: Store 用マニフェストの描画を検証
+        shell: pwsh
+        run: |
+          # The reserved Identity Name is still unknown, so the checked value
+          # here is only a placeholder; the identity values that must hold are
+          # the account-wide Publisher and its display name.
+          $out = Join-Path $env:RUNNER_TEMP 'store-manifest.xml'
+          .\.build-venv\Scripts\python -m device_warden.msixmanifest --profile store `
+            --identity-name tonbiattack.DeviceWarden --template msix\AppxManifest.xml --output $out
+          if ($LASTEXITCODE -ne 0) { throw 'Store 用マニフェストを描画できませんでした。' }
+          [xml]$store = Get-Content $out
+          $identity = $store.SelectSingleNode("//*[local-name()='Identity']")
+          $properties = $store.SelectSingleNode("//*[local-name()='Properties']")
+          if ($identity.Publisher -ne 'CN=2F14A66E-02DF-43E2-93E0-5C5900B38D2E') {
+            throw "Publisher が正式値ではありません: $($identity.Publisher)"
+          }
+          if ($properties.PublisherDisplayName -ne 'tonbiattack') {
+            throw "PublisherDisplayName が正式値ではありません: $($properties.PublisherDisplayName)"
+          }
+          if ($properties.DisplayName -ne 'Device Warden') {
+            throw "表示名が PublisherDisplayName になっています: $($properties.DisplayName)"
+          }
+          Write-Host "store identity=$($identity.Name) publisher=$($identity.Publisher) publisherDisplayName=$($properties.PublisherDisplayName) displayName=$($properties.DisplayName)"

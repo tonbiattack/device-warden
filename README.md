@@ -62,7 +62,7 @@ Python、データフォルダ、Brokerトークン、Brokerの応答、`adb`、
 
 ## MSIX の技術検証
 
-Microsoft Store 向けの MSIX 化は調査中です。開発者モードで登録する**検証用ビルド**のみで、通常利用や Store 提出には使えません。登録・起動・隔離・永続化・アンインストールは実機で確認しましたが、署名済み配布、実端末との連携、WACK の全項目 PASS は未達です。詳細は [MSIX 技術検証](docs/MSIX-TECHNICAL-VALIDATION.md) を参照してください。
+Microsoft Store 向けの MSIX 化は調査中です。開発者モードで登録する**検証用ビルド**のみで、通常利用や Store 提出には使えません。登録・起動・隔離・永続化・アンインストールは実機で確認しましたが、署名済み配布、実端末との連携、WACK の全項目 PASS は未達です。詳細は [MSIX 技術検証](docs/MSIX-TECHNICAL-VALIDATION.md)、提出用の切り替えは [Store 提出用 MSIX の準備](docs/STORE-SUBMISSION.md) を参照してください。
 
 ## 動作環境
 
