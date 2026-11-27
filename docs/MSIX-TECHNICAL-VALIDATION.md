@@ -48,10 +48,18 @@ one-folder（`--onedir`）でビルドし、`DeviceWardenMsixDev\DeviceWardenMsi
 | WACK（インストール済み） | 管理者権限で `-packagefullname` を実行したが、**全項目 FAIL**。メッセージは「このアプリ パッケージのマニフェスト ファイルが見つかりませんでした」「パスの形式が無効です」で、レイアウト登録（WindowsApps ではない）のパッケージを WACK が解決できないため。アプリの不具合ではなく、正式インストール（署名済み）で再実行する必要がある。 |
 | Android 端末 | 検証時点では実機・エミュレーターとも未接続。ADB は試作が拒否する設計のため、実端末の claim / heartbeat / release は未検証。 |
 
+## Store の署名とローカル検証の違い
+
+Microsoft Store に MSIX を出す場合、**証明書の購入や管理は不要**。提出したパッケージは認定後に Microsoft の証明書で再署名され、利用者はその署名でインストールする（[App package requirements](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/msix/app-package-requirements#code-signing-for-microsoft-store-submissions)、[Sign your MSIX package](https://learn.microsoft.com/en-us/windows/msix/package/sign-msix-package-guide)）。CA に連なる証明書で署名しておく必要も、`.pfx` を用意する必要もない。
+
+一方、**Store を経由せずにこのマシンへ入れる場合は、その署名を信頼させる必要がある**。開発者モードでレイアウトを登録する方法と、マシン範囲で証明書を信頼する方法の違いはここにある。ローカルで信頼を追加するのは提出前の確認のためだけで、Store 配布の必須手順ではない。
+
+マニフェストの `Publisher` は Partner Center のアプリ識別情報と一致させる必要がある。現在の `CN=Device Warden Development` は仮値で、正式値は Partner Center の「アプリ識別情報の表示」から取る。
+
 ## 未検証と制約
 
 - **ADB と claim の拒否は試作品だけの性質**で、MSIX 化そのものの制限ではない。正式版は `DEVICE_WARDEN_HOME`・ポート・端末を通常版と共有するため、二重 DB の問題は起きない（同じポートなので Broker は1つだけ）。試作で隔離したのは、検証中に実データと実端末を触らないためである。
-- **署名済みパッケージの配布経路**は未検証。マシン範囲の証明書信頼か、正式なコード署名証明書が必要。信頼変更は同じ発行元の他のパッケージにも影響し得る。
+- **署名済みパッケージをローカルで入れる経路**は未検証。Store が再署名するため配布自体に証明書は不要だが、提出前にこのマシンで確認するならマシン範囲の信頼（管理者）が要る。信頼変更は同じ発行元の他のパッケージにも影響し得る。実際の署名済み配布は Partner Center のフライト／申請後に確認する（Issue の対象外）。
 - レイアウト登録ではアプリが**ソースフォルダから実行**される。WindowsApps 配下の読み取り専用パッケージでの挙動（更新・修復・仮想化）は未検証。今回確認できたのは「exe の隣に書かない」ところまで。
 - 逆向きの loopback（パッケージから外部 Broker へ）は、隔離のため別ポートを使っており未検証。
 - トレイアイコンの目視、通知、高 DPI の実際の表示品質は未確認。
@@ -77,8 +85,8 @@ ADB（Android SDK Platform-Tools）は必須、scrcpy と apksigner は利用機
 
 ## 残作業
 
-1. 署名済みパッケージを配布するなら、正式なコード署名証明書を用意し、マシン範囲の信頼（管理者）でインストールを再検証する。検証用証明書の公開証明書だけを信頼する場合の撤去手順も決める。
+1. Store 配布なら証明書の用意は不要（認定後に Microsoft が再署名する）。提出前にローカルで署名済みパッケージを確認したい場合だけ、検証用証明書の公開証明書をマシン範囲で信頼し、確認後に撤去する。
 2. 実機検証を通常 Broker と競合させない方式（例: 通常版だけを使い、MSIX 版は UI と常駐の確認に限定する）を決める。
 3. 管理者権限のアクティブセッションで、**署名済みの正式インストール**に対して WACK を実行する。レイアウト登録のままでは全項目 FAIL になり、判定材料にならない。任意 TEST88 の FAIL は静的参照の指摘なので、実行時の子プロセス起動（Broker、adb、scrcpy）とあわせて評価する。
 4. StartupTask の有効化とサインイン時起動、高 DPI、トレイ通知を実機で確認する。
-5. Partner Center の正式 ID・証明書・申告情報を用意し、提出用パッケージを作り直す。
+5. Partner Center で名前を予約し、`Identity`（Name / Publisher / PublisherDisplayName）を正式値に合わせた提出用パッケージを作る。フライトで署名済み配布と更新を確認する。
