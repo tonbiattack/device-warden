@@ -1,0 +1,14 @@
+title: Device Warden
+description: Android 実機を人間と複数の AI エージェントで共有するためのリース管理ツール
+theme: jekyll-theme-minimal
+lang: ja
+# Only the public pages are published; the design and verification notes stay
+# out of the generated site.
+exclude:
+  - AI-INTEGRATION-VALIDATION.md
+  - ARCHITECTURE.md
+  - MSIX-TECHNICAL-VALIDATION.md
+  - SPEC.md
+  - STORE-SUBMISSION.md
+  - WINDOWS-SECURITY.md
+  - STORE_LISTING.md
